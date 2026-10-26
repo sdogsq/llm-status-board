@@ -52,7 +52,7 @@ export interface UpdaterApi {
 }
 
 /** 「前往发布页」统一入口（手滑改 URL 只改这里） */
-export const RELEASES_PAGE_URL = "https://github.com/Lingrui98/llm-status-board/releases/latest";
+export const RELEASES_PAGE_URL = "https://github.com/sdogsq/llm-status-board/releases/latest";
 
 /**
  * 把插件/网络错误转成可读中文（与 autostartErrorMessage 同风格：不泄露堆栈，且给出下一步）。

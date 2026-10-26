@@ -107,6 +107,9 @@ async function releasePendingUpdate(handle: Update | null): Promise<void> {
 /** 真实更新 API（§4.1）：check → downloadAndInstall → relaunch；失败一律抛给调用方做文案化 */
 export const pluginUpdater: UpdaterApi = {
   async check(proxy) {
+    if (import.meta.env.VITE_SIGNED_UPDATER !== "true") {
+      throw new Error("此安装包未配置签名自动更新，请点击「前往发布页」手动下载安装");
+    }
     const mod = await import("@tauri-apps/plugin-updater");
     // 上一次检查若有遗留句柄先释放（用户连点「检查更新」的正常路径）
     await releasePendingUpdate(pendingUpdate);

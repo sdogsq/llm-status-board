@@ -4,6 +4,10 @@
 
 ![tech](https://img.shields.io/badge/Tauri%202-Rust%20%2B%20React-blue)
 
+此 fork 的安装包与更新入口：[sdogsq/llm-status-board Releases](https://github.com/sdogsq/llm-status-board/releases/latest)。发布流水线会先测试并校验完整的 Windows/macOS 三平台安装包，再公开版本。
+
+fork 的签名自动更新需要 Actions Secret `TAURI_SIGNING_PRIVATE_KEY`（以及可选的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）和 Actions Variable `TAURI_SIGNING_PUBLIC_KEY`，公钥应为 Tauri signer 输出的编码公钥。缺少配置时发布手动安装包，应用明确提示前往本仓库下载；不会沿用上游公钥或更新地址。未配置签名的安装包仅支持手动更新。签名模式下，流水线校验三平台更新包签名后统一生成 `latest.json`，避免矩阵任务并发覆盖清单。
+
 ## 支持的提供商
 
 ### 中转站

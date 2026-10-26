@@ -576,7 +576,7 @@ export default function App() {
       setUpdateState({
         kind: "error",
         phase: "check",
-        message: `无法打开发布页：${readableError(e)}；请手动访问 github.com/Lingrui98/llm-status-board/releases`,
+        message: `无法打开发布页：${readableError(e)}；请手动访问 github.com/sdogsq/llm-status-board/releases`,
       });
     }
   }, []);
