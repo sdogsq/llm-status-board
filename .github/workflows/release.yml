@@ -142,7 +142,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.prepare.outputs.release_id }}
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
           args: ${{ matrix.args }} --config "${{ steps.config.outputs.path }}"
 
   publish:

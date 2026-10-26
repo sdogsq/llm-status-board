@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from urllib.parse import quote
 
 
 def gh(*args):
@@ -72,7 +73,9 @@ def main():
                 decoded = root / f'{platform}.minisig'
                 decoded.write_bytes(base64.b64decode(signature, validate=True))
                 subprocess.run(['minisign', '-Vm', str(payload), '-p', str(public), '-x', str(decoded)], check=True)
-                platforms[platform] = {'url': assets[name]['browser_download_url'], 'signature': signature}
+                # Draft asset URLs contain an untagged-* path that changes at publication.
+                url = f'https://github.com/{args.repo}/releases/download/{quote(args.tag, safe="")}/{quote(name, safe="")}'
+                platforms[platform] = {'url': url, 'signature': signature}
             manifest = root / 'latest.json'
             manifest.write_text(json.dumps({'version': version, 'notes': release['body'],
                                            'pub_date': release['created_at'], 'platforms': platforms}, indent=2))
