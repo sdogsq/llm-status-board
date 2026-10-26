@@ -29,6 +29,8 @@ jobs:
       signed: ${{ steps.signing.outputs.signed }}
       public_key: ${{ steps.signing.outputs.public_key }}
       commit: ${{ steps.release.outputs.commit }}
+      matrix: ${{ steps.release.outputs.matrix }}
+      has_builds: ${{ steps.release.outputs.has_builds }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,6 +66,7 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, subprocess
@@ -79,22 +82,32 @@ jobs:
                   '-f', f'tag_name={tag}', '-f', f'name=LLM Status Board {tag}',
                   '-f', 'body=Windows / macOS installers are being verified.', '-F', 'draft=true', '-F', 'prerelease=false']))
           commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          version = tag.removeprefix('v')
+          assets = {asset['name'] for asset in release['assets'] if asset['state'] == 'uploaded' and asset['size'] > 0}
+          signed = os.environ['SIGNED'] == 'true'
+          candidates = [
+              ('windows-latest', '', [f'LLM.Status.Board_{version}_x64-setup.exe'],
+               [f'LLM.Status.Board_{version}_x64-setup.exe.sig']),
+              ('macos-latest', '--target aarch64-apple-darwin', [f'LLM.Status.Board_{version}_aarch64.dmg'],
+               ['LLM.Status.Board_aarch64.app.tar.gz', 'LLM.Status.Board_aarch64.app.tar.gz.sig']),
+              ('macos-15-intel', '--target x86_64-apple-darwin', [f'LLM.Status.Board_{version}_x64.dmg'],
+               ['LLM.Status.Board_x64.app.tar.gz', 'LLM.Status.Board_x64.app.tar.gz.sig']),
+          ]
+          include = [{'platform': platform, 'args': args} for platform, args, installers, updates in candidates
+                     if not all(name in assets for name in installers + (updates if signed else []))]
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f"id={release['id']}\ncommit={commit}\n")
+              output.write(f"matrix={json.dumps({'include': include})}\n")
+              output.write(f"has_builds={str(bool(include)).lower()}\n")
+          print('Remaining builds:', [item['platform'] for item in include])
           PY
 
   build:
     needs: prepare
+    if: needs.prepare.outputs.has_builds == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ""
-          - platform: macos-latest
-            args: "--target aarch64-apple-darwin"
-          - platform: macos-latest
-            args: "--target x86_64-apple-darwin"
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.platform }}
     env:
       VITE_SIGNED_UPDATER: ${{ needs.prepare.outputs.signed }}
@@ -147,6 +160,7 @@ jobs:
 
   publish:
     needs: [prepare, build]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
