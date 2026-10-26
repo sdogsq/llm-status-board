@@ -29,7 +29,12 @@ def main():
     parser.add_argument('--tag', required=True)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-    release = json.loads(gh('api', f'repos/{args.repo}/releases/tags/{args.tag}'))
+    # The releases/tags endpoint can return 404 for drafts; the list endpoint includes them.
+    matches = [release for release in json.loads(gh('api', f'repos/{args.repo}/releases?per_page=100'))
+               if release['tag_name'] == args.tag]
+    if len(matches) != 1:
+        raise ValueError('Expected exactly one matching release or draft')
+    release = matches[0]
     if not args.dry_run and not release['draft']:
         raise ValueError('Refusing to mutate an already published release')
     assets = {asset['name']: asset for asset in release['assets']}
