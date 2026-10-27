@@ -42,6 +42,8 @@ def main():
     version = args.tag.removeprefix('v')
     expected = installers(assets, version)
     signed = os.environ.get('SIGNED_UPDATER') == 'true'
+    notes = Path('.github/release-notes.md').read_text()
+    notes += '\n\n更新方式：' + ('支持应用内签名更新。' if signed else '本安装包使用手动更新，请从本仓库 Releases 下载；尚未配置 fork 签名自动更新。')
     with tempfile.TemporaryDirectory() as folder:
         root = Path(folder)
 
@@ -77,15 +79,13 @@ def main():
                 url = f'https://github.com/{args.repo}/releases/download/{quote(args.tag, safe="")}/{quote(name, safe="")}'
                 platforms[platform] = {'url': url, 'signature': signature}
             manifest = root / 'latest.json'
-            manifest.write_text(json.dumps({'version': version, 'notes': release['body'],
+            manifest.write_text(json.dumps({'version': version, 'notes': notes,
                                            'pub_date': release['created_at'], 'platforms': platforms}, indent=2))
             if not args.dry_run:
                 gh('release', 'upload', args.tag, str(manifest), '--repo', args.repo, '--clobber')
         if args.dry_run:
             print('Dry run complete; no release changes made.')
             return
-        notes = Path('.github/release-notes.md').read_text()
-        notes += '\n\n更新方式：' + ('支持应用内签名更新。' if signed else '本安装包使用手动更新，请从本仓库 Releases 下载；尚未配置 fork 签名自动更新。')
         notes_file = root / 'notes.md'
         notes_file.write_text(notes)
         gh('release', 'edit', args.tag, '--repo', args.repo, '--title', f'LLM Status Board {args.tag}',
