@@ -16,11 +16,22 @@ def main():
     public = os.environ.get('TAURI_SIGNING_PUBLIC_KEY', '').strip()
     if not private or not public:
         raise SystemExit('Missing Actions Secret TAURI_SIGNING_PRIVATE_KEY or Variable TAURI_SIGNING_PUBLIC_KEY')
-    try:
-        base64.b64decode(private, validate=True)
-        public_bytes = base64.b64decode(public, validate=True)
-    except ValueError:
-        raise SystemExit('Key encoding is invalid; paste complete Tauri key file contents without decoding')
+    decoded = {}
+    invalid = False
+    for name, value in [('TAURI_SIGNING_PRIVATE_KEY', private), ('TAURI_SIGNING_PUBLIC_KEY', public)]:
+        try:
+            decoded[name] = base64.b64decode(value, validate=True)
+            print(name + ': encoded format OK', flush=True)
+        except ValueError:
+            invalid = True
+            print(name + ': invalid encoded format', flush=True)
+            if any(char.isspace() for char in value):
+                print('  Contains whitespace inside the encoded value; copy its single complete line.', flush=True)
+            if any(ord(char) > 127 for char in value):
+                print('  Contains non-ASCII text; copy only the encoded key file contents.', flush=True)
+    if invalid:
+        raise SystemExit('Replace the invalid configuration entry with complete Tauri key file contents without decoding')
+    public_bytes = decoded['TAURI_SIGNING_PUBLIC_KEY']
 
     env = os.environ.copy()
     env['CI'] = 'true'
