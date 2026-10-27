@@ -71,7 +71,7 @@ macOS 出 `.app` / `.dmg`（需要 Mac 上构建或用下方 CI）。
 仓库带两个工作流（`.github/workflows/`）：
 
 - **ci.yml**：push / PR 时自动跑前端测试（vitest + tsc + build）与 Rust 检查（fmt / clippy / 单测，Windows + macOS 双矩阵）
-- **release.yml**：push 一个 tag（如 `v0.1.0`）自动构建 Windows + macOS（Apple Silicon / Intel）安装包并发布到 GitHub Release；macOS 签名相关变量见工作流注释。配置了更新签名密钥（`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个 Secrets）后，会额外生成 `latest.json` 与签名文件供软件内一键更新使用（见「使用」第 7 条）
+- **release.yml**：push 一个 tag（如 `v0.1.0`）自动构建 Windows + macOS（Apple Silicon / Intel）安装包并发布到 GitHub Release。配置 Secret `TAURI_SIGNING_PRIVATE_KEY`、可选 Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 和 Variable `TAURI_SIGNING_PUBLIC_KEY` 后，会生成签名更新包及 `latest.json`。手动运行时可勾选 `verify_signing_only`，用一次签名、验签及文件篡改检查验证配置，该模式不构建或发布版本。
 
 > 注意：本仓库根目录就是项目本身（package.json / src-tauri 在根下），工作流按此布局配置。
 
@@ -85,6 +85,7 @@ macOS 出 `.app` / `.dmg`（需要 Mac 上构建或用下方 CI）。
 6. 跨设备迁移（比如 Windows 配好后搬到 Mac）：「设置 → 导出配置」得到 JSON 文件，在另一台机器上「导入配置」——设置替换、账号按 ID 合并（**导出文件包含 API Key，请妥善保管**）
 7. 一键更新：「设置 → 关于与更新」→「检查更新」→「立即更新」，下载安装全自动（Windows 由安装器接管重启，macOS 安装后点「立即重启」）；默认启动时也会静默检查一次（可关），发现新版本只在顶栏提示。更新包带签名校验，更新检查与数据查询共用同一网络代理设置
 8. 托盘区域速览：悬停托盘图标弹出「用量总结」浮层，配额账号行下含**每个窗口**（5h / 7d / 1d / 1m 等）的已用直条与重置倒计时；**右下角手柄可拖拽调整浮层大小**（尺寸记忆）。右键菜单保持简洁：账号名 + 主指标状态行，点击直达详情。sub2api 站的日/周/月数字限额会自动转成百分比参与展示（超限 >100% 可见；日限额按自然日 0 点重置，周窗口带重置倒计时）；「设置 → 通用设置 → 限额窗口明细显示」可切换 百分比条 / 原始数字
+9. 账号排序：「设置 → 账号管理」中拖动每行左侧的六点手柄，直接移到目标位置，松手后自动保存并同步看板顺序。拖到页面边缘会自动滚动，`Esc` 或拖出列表取消。键盘操作：聚焦手柄后，空格拿起、上下键移动、空格放下、`Esc` 取消；排序失败时使用顶部保存状态旁的「重试」。
 
 ### AiHubMix 余额与累计用量
 
