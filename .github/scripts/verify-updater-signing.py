@@ -22,9 +22,17 @@ def main():
         try:
             decoded[name] = base64.b64decode(value, validate=True)
             print(name + ': encoded format OK', flush=True)
-        except ValueError:
+        except ValueError as error:
             invalid = True
             print(name + ': invalid encoded format', flush=True)
+            if 'Incorrect padding' in str(error) or 'number of data characters' in str(error):
+                print('  Encoded text is incomplete or has missing Base64 padding.', flush=True)
+            else:
+                print('  Value contains characters outside the standard Base64 alphabet.', flush=True)
+            if any(char in value for char in ['"', "'", '`']):
+                print('  Quote or code-fence characters are present; paste only file contents.', flush=True)
+            if '...' in value or '\u2026' in value:
+                print('  Truncation dots are present; use the complete original file.', flush=True)
             if any(char.isspace() for char in value):
                 print('  Contains whitespace inside the encoded value; copy its single complete line.', flush=True)
             if any(ord(char) > 127 for char in value):
