@@ -105,6 +105,8 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
   const st = statusClass(outcome, refreshing);
   const subscription = account.kind === "openAiSubscription";
   const quotaHistory = useQuotaHistory(account.id, subscription ? info?.quotaScope : null, info?.fetchedAt);
+  // 历史终点使用本次渲染时间，避免新采样等待相对时间标签的 30 秒时钟。
+  const historyNow = Date.now();
 
   useEffect(
     () => () => {
@@ -375,8 +377,8 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
           onClose={() => setDetailOpen(false)}
         >
           <div className="drawer-charts">
-            {subscription ? <QuotaHistory key={`${account.id}:${info?.quotaScope ?? ""}`} samples={quotaHistory.samples} info={info} error={quotaHistory.error} now={now} /> : <>
-            <AccountTrends accountId={account.id} snapshots={snapshots} info={info} now={now} balanceEmptyNote={chartEmptyNote("balance")} />
+            {subscription ? <QuotaHistory key={`${account.id}:${info?.quotaScope ?? ""}`} samples={quotaHistory.samples} info={info} error={quotaHistory.error} now={historyNow} /> : <>
+            <AccountTrends accountId={account.id} snapshots={snapshots} info={info} now={historyNow} balanceEmptyNote={chartEmptyNote("balance")} />
             <DrawerSection title="额度构成" hasData={flags.breakdown} emptyNote={chartEmptyNote("breakdown")}>
               <BalanceBreakdownChart info={info} emptyNote={chartEmptyNote("breakdown")} />
             </DrawerSection>
