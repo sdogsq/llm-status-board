@@ -28,6 +28,9 @@ jobs:
       - name: Frontend build
         run: npm run build
 
+      - name: Release publication checks
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
   rust:
     strategy:
       fail-fast: false

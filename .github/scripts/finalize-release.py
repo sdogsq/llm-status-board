@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,6 +29,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo', required=True)
     parser.add_argument('--tag', required=True)
+    parser.add_argument('--channel', choices=['stable', 'nightly'], default='stable')
+    parser.add_argument('--version', help='Explicit nightly version; stable versions come from the tag')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     # The releases/tags endpoint can return 404 for drafts; the list endpoint includes them.
@@ -39,10 +42,20 @@ def main():
     if not args.dry_run and not release['draft']:
         raise ValueError('Refusing to mutate an already published release')
     assets = {asset['name']: asset for asset in release['assets']}
-    version = args.tag.removeprefix('v')
+    nightly = args.channel == 'nightly'
+    if nightly:
+        if args.tag != 'nightly' or not release['prerelease'] or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+', args.version or ''):
+            raise ValueError('Nightly requires its own prerelease tag and version')
+        version = args.version
+    else:
+        if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', args.tag) or args.version:
+            raise ValueError('Stable releases require a version tag without an override')
+        version = args.tag.removeprefix('v')
     expected = installers(assets, version)
     signed = os.environ.get('SIGNED_UPDATER') == 'true'
-    notes = Path('.github/release-notes.md').read_text()
+    if nightly and not signed:
+        raise ValueError('Nightly requires signed updater artifacts')
+    notes = release['body'] if nightly else Path('.github/release-notes.md').read_text()
     notes += '\n\n更新方式：' + ('支持应用内签名更新。' if signed else '本安装包使用手动更新，请从本仓库 Releases 下载；尚未配置 fork 签名自动更新。')
     with tempfile.TemporaryDirectory() as folder:
         root = Path(folder)
@@ -88,8 +101,9 @@ def main():
             return
         notes_file = root / 'notes.md'
         notes_file.write_text(notes)
-        gh('release', 'edit', args.tag, '--repo', args.repo, '--title', f'LLM Status Board {args.tag}',
-           '--notes-file', str(notes_file), '--draft=false', '--latest')
+        gh('release', 'edit', args.tag, '--repo', args.repo, '--title', 'nightly' if nightly else f'LLM Status Board {args.tag}',
+           '--notes-file', str(notes_file), '--draft=false', '--prerelease' if nightly else '--prerelease=false',
+           '--latest=false' if nightly else '--latest')
         print(f'Published https://github.com/{args.repo}/releases/tag/{args.tag}')
 
 

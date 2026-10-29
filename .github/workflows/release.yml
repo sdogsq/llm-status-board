@@ -14,15 +14,29 @@ on:
         required: false
         default: false
         type: boolean
+  workflow_call:
+    inputs:
+      release_id:
+        description: Existing nightly draft release ID
+        required: false
+        default: ""
+        type: string
+      version:
+        description: Checkout-only nightly version
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.release_id && 'nightly' || inputs.release_tag || github.ref_name }}
+  NIGHTLY_VERSION: ${{ inputs.version || '' }}
+  INPUT_RELEASE_ID: ${{ inputs.release_id || '' }}
 
 concurrency:
-  group: release-${{ inputs.release_tag || github.ref_name }}
+  group: release-${{ inputs.release_id && 'nightly' || inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -47,7 +61,7 @@ jobs:
         run: python3 .github/scripts/verify-updater-signing.py
 
   prepare:
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && !inputs.verify_signing_only
+    if: (inputs.release_id || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && !inputs.verify_signing_only
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.release.outputs.id }}
@@ -59,16 +73,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag || github.sha }}
       - name: Check tag and version
         run: |
           python3 - <<'PY'
           import json, os, pathlib, re, tomllib
-          assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', os.environ['RELEASE_TAG'])
-          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          version = json.loads(pathlib.Path('package.json').read_text())['version']
+          if os.environ['INPUT_RELEASE_ID']:
+              assert os.environ['INPUT_RELEASE_ID'].isdigit()
+              assert re.fullmatch(re.escape(version) + r'-nightly\.[0-9]{8}\.[0-9]+', os.environ['NIGHTLY_VERSION'])
+          else:
+              assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', os.environ['RELEASE_TAG'])
+              assert os.environ['RELEASE_TAG'] == 'v' + version
           for path in ['package.json', 'package-lock.json', 'src-tauri/tauri.conf.json']:
               assert json.loads(pathlib.Path(path).read_text())['version'] == version, path
           assert tomllib.loads(pathlib.Path('src-tauri/Cargo.toml').read_text())['package']['version'] == version
+          packages = tomllib.loads(pathlib.Path('src-tauri/Cargo.lock').read_text())['package']
+          assert next(p for p in packages if p['name'] == 'llm-status-board')['version'] == version
           PY
       - name: Determine signed updater availability
         id: signing
@@ -96,18 +117,23 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib, subprocess
           repo, tag = os.environ['GITHUB_REPOSITORY'], os.environ['RELEASE_TAG']
-          releases = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases?per_page=100']))
-          matches = [release for release in releases if release['tag_name'] == tag]
-          assert len(matches) <= 1, 'Duplicate release drafts must be resolved before publishing'
-          if matches:
-              release = matches[0]
-              assert release['draft'], 'An existing public release cannot be overwritten'
-          else:
-              release = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases', '--method', 'POST',
-                  '-f', f'tag_name={tag}', '-f', f'name=LLM Status Board {tag}',
-                  '-f', 'body=Windows / macOS installers are being verified.', '-F', 'draft=true', '-F', 'prerelease=false']))
           commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          version = tag.removeprefix('v')
+          if os.environ['INPUT_RELEASE_ID']:
+              release = json.loads(subprocess.check_output(['gh', 'api', f"repos/{repo}/releases/{os.environ['INPUT_RELEASE_ID']}"]))
+              assert release['tag_name'] == 'nightly' and release['draft'] and release['prerelease']
+              assert f'<!-- nightly-commit:{commit} -->' in release['body']
+          else:
+              releases = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases?per_page=100']))
+              matches = [release for release in releases if release['tag_name'] == tag]
+              assert len(matches) <= 1, 'Duplicate release drafts must be resolved before publishing'
+              if matches:
+                  release = matches[0]
+                  assert release['draft'], 'An existing public release cannot be overwritten'
+              else:
+                  release = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/releases', '--method', 'POST',
+                      '-f', f'tag_name={tag}', '-f', f'name=LLM Status Board {tag}',
+                      '-f', 'body=Windows / macOS installers are being verified.', '-F', 'draft=true', '-F', 'prerelease=false']))
+          version = os.environ['NIGHTLY_VERSION'] or tag.removeprefix('v')
           assets = {asset['name'] for asset in release['assets'] if asset['state'] == 'uploaded' and asset['size'] > 0}
           signed = os.environ['SIGNED'] == 'true'
           candidates = [
@@ -168,6 +194,8 @@ jobs:
           config = {'bundle': {'createUpdaterArtifacts': os.environ['SIGNED'] == 'true'},
                     'plugins': {'updater': {'pubkey': os.environ['PUBLIC_KEY'],
                     'endpoints': [f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/latest/download/latest.json"]}}}
+          if os.environ['NIGHTLY_VERSION']:
+              config['version'] = os.environ['NIGHTLY_VERSION']
           path.write_text(json.dumps(config))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'path={path.as_posix()}\n')
@@ -185,10 +213,12 @@ jobs:
 
   publish:
     needs: [prepare, build]
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    if: ${{ !inputs.release_id && !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - name: Install updater signature verifier
         if: needs.prepare.outputs.signed == 'true'
         run: sudo apt-get update && sudo apt-get install -y minisign

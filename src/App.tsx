@@ -10,7 +10,7 @@ import NotificationCenter from "./components/NotificationCenter";
 import { InlineNotice } from "./components/ui";
 import type { FocusRequest } from "./components/ProviderCard";
 import * as api from "./api";
-import type { AppConfig, BalanceSnapshot, ProviderKind, RefreshOutcome, UsageRecord } from "./types";
+import type { AppConfig, BalanceSnapshot, ProviderKind, RefreshOutcome, UpdateChannel, UsageRecord } from "./types";
 import { formatDurationMs } from "./format";
 import { mergeRotatedTokens } from "./configMerge";
 import { buildUsageBatch, hasUsageChanges, toLocalDateKey } from "./usageHistory";
@@ -27,8 +27,16 @@ import {
 } from "./systemNotify";
 import { querySystemNotifyPermission, sendSystemNotify } from "./systemNotifyApi";
 import { toggleAutostart } from "./autostart";
+import { useTheme } from "./useTheme";
+import { useTodayKey } from "./useTodayKey";
 import { pluginAutostart, pluginSystemNotify, pluginUpdater, queryAppVersion } from "./pluginRuntime";
-import { updaterErrorMessage, type UpdateInfo, type UpdateState } from "./updater";
+import {
+  resolveUpdateChannel,
+  updateChannelLabel,
+  updaterErrorMessage,
+  type UpdateInfo,
+  type UpdateState,
+} from "./updater";
 import {
   computeProblemNotifications,
   diffRecovered,
@@ -80,6 +88,7 @@ function isEditingTarget(t: EventTarget | null): boolean {
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [config, setConfig] = useState<AppConfig | null>(null);
+  useTheme(config?.settings);
   const [statuses, setStatuses] = useState<Record<string, RefreshOutcome>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [refreshAnnouncement, setRefreshAnnouncement] = useState("");
@@ -93,8 +102,8 @@ export default function App() {
   // R15：本地用量历史（逐日总账）。读取/写入失败都只做轻量提示，绝不影响看板主流程。
   const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([]);
   const [usageError, setUsageError] = useState<string | null>(null);
-  // 「今日」本地日历日：整个分析视图共用同一份来源，避免多处 new Date() 造成口径漂移
-  const [todayKey, setTodayKey] = useState(() => toLocalDateKey());
+  // 「今日」本地日历日：整个分析视图共用同一份来源，跨午夜也会自动前进
+  const { todayKey, updateTodayKey } = useTodayKey();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   // 新手引导：accounts 为空 && 未跳过时自动出现；guideOpen 支持从帮助面板手动重开
@@ -103,6 +112,8 @@ export default function App() {
   const configRef = useRef<AppConfig | null>(null);
   // 「去设置并添加账号（预选类型）」请求：nonce 判重，SettingsView 消费后经 onAddRequestHandled 清除
   const [addRequest, setAddRequest] = useState<{ kind: ProviderKind; nonce: number } | null>(null);
+  // 异常卡片「编辑配置」请求：设置页据此直接打开对应账号表单
+  const [editRequest, setEditRequest] = useState<{ accountId: string; nonce: number } | null>(null);
   // 「跳转到账号」请求：nonce 判重，Dashboard 投递给匹配卡片后经 onFocusRequestHandled 清除
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   const refreshTimer = useRef<number | null>(null);
@@ -170,6 +181,7 @@ export default function App() {
 
   const clearFocusRequest = useCallback(() => setFocusRequest(null), []);
   const clearAddRequest = useCallback(() => setAddRequest(null), []);
+  const clearEditRequest = useCallback(() => setEditRequest(null), []);
 
   // 关闭引导并持久化标记（跳过 / 完成 / ESC 共用）
   const dismissGuide = useCallback(() => {
@@ -191,6 +203,11 @@ export default function App() {
     },
     [dismissGuide],
   );
+
+  const handleEditAccount = useCallback((accountId: string) => {
+    setEditRequest({ accountId, nonce: Date.now() });
+    setView("settings");
+  }, []);
 
   // 帮助面板「重新打开新手引导」
   const handleReopenGuide = useCallback(() => {
@@ -326,7 +343,7 @@ export default function App() {
       } else {
         await persistUsageBatch(outcomes, dayKey);
       }
-      setTodayKey(dayKey);
+      updateTodayKey();
     } catch (e) {
       ipcFailed = true;
       setLoadError(String(e));
@@ -365,7 +382,7 @@ export default function App() {
         setRetryAnnouncement("");
       }
     }
-  }, [loadHistory, persistUsageBatch]);
+  }, [loadHistory, persistUsageBatch, updateTodayKey]);
 
   // R16 §5：把配置同步进重试控制器（开关 / 次数上限）
   useEffect(() => {
@@ -485,9 +502,9 @@ export default function App() {
 
   // 静默检查发现新版本时的系统通知：尊重系统通知总开关；同一版本只推一次（localStorage 去重）；
   // 后台检查**绝不**主动请求权限（allowRequest=false）
-  const maybeNotifyUpdate = useCallback((info: UpdateInfo) => {
+  const maybeNotifyUpdate = useCallback((info: UpdateInfo, channel: UpdateChannel) => {
     if (!isSystemNotifyEnabled(configRef.current?.settings)) return;
-    const key = `lsb-update-notified:${info.version}`;
+    const key = `lsb-update-notified:${channel}:${info.version}`;
     try {
       if (window.localStorage.getItem(key) === "1") return;
       window.localStorage.setItem(key, "1");
@@ -498,7 +515,7 @@ export default function App() {
       pluginSystemNotify,
       {
         title: "LLM Status Board 有新版本",
-        body: `v${info.version} 已发布，前往「设置 → 关于与更新」一键更新。`,
+        body: `${updateChannelLabel(channel)} v${info.version} 已发布，前往「设置 → 关于与更新」一键更新。`,
       },
       false,
     );
@@ -513,15 +530,26 @@ export default function App() {
       if (updateBusyRef.current) return;
       updateBusyRef.current = true;
       setUpdateState({ kind: "checking" });
+      const settings = configRef.current?.settings;
+      const channel = resolveUpdateChannel(settings);
       try {
-        const info = await pluginUpdater.check(configRef.current?.settings.proxy ?? null);
+        const info = await pluginUpdater.check(settings?.proxy ?? null, channel);
+        // 检查期间若配置导入改变了渠道，丢弃旧渠道结果，不展示也不能安装。
+        if (resolveUpdateChannel(configRef.current?.settings) !== channel) {
+          setUpdateState({ kind: "idle" });
+          return;
+        }
         if (!info) {
           setUpdateState(silent ? { kind: "idle" } : { kind: "up-to-date" });
           return;
         }
         setUpdateState({ kind: "available", info });
-        if (silent) maybeNotifyUpdate(info);
+        if (silent) maybeNotifyUpdate(info, channel);
       } catch (e) {
+        if (resolveUpdateChannel(configRef.current?.settings) !== channel) {
+          setUpdateState({ kind: "idle" });
+          return;
+        }
         setUpdateState(
           silent ? { kind: "idle" } : { kind: "error", phase: "check", message: updaterErrorMessage(e, "check") },
         );
@@ -571,7 +599,7 @@ export default function App() {
   // 兜底：系统浏览器打开发布页（capability 已把 open 限定在本仓库 releases；失败如实提示）
   const handleOpenReleasePage = useCallback(async () => {
     try {
-      await pluginUpdater.openReleasePage();
+      await pluginUpdater.openReleasePage(resolveUpdateChannel(configRef.current?.settings));
     } catch (e) {
       setUpdateState({
         kind: "error",
@@ -597,14 +625,17 @@ export default function App() {
     };
   }, []);
 
-  // 启动约 5s 后静默检查一次更新（默认开，可在「设置 → 关于与更新」关闭；只提示，不自动下载）
+  // 配置加载完成约 5s 后静默检查一次更新，确保使用已保存的渠道和代理。
+  const configLoaded = config !== null;
   useEffect(() => {
+    if (!configLoaded) return;
     const t = window.setTimeout(() => {
-      if ((configRef.current?.settings.autoCheckUpdate ?? true) === false) return;
+      const settings = configRef.current?.settings;
+      if (!settings || (settings.autoCheckUpdate ?? true) === false) return;
       void runUpdateCheck(true);
     }, 5000);
     return () => window.clearTimeout(t);
-  }, [runUpdateCheck]);
+  }, [configLoaded, runUpdateCheck]);
 
   // 初始化：加载配置 → 按设置决定是否自动刷新一次
   useEffect(() => {
@@ -735,8 +766,11 @@ export default function App() {
   // 设置页统一入口：任何变更立即乐观生效（看板/快捷键/命令面板同步看到），400ms 防抖后落盘
   const handleSaveSettings = useCallback(
     (newConfig: AppConfig) => {
+      const channelChanged =
+        resolveUpdateChannel(configRef.current?.settings) !== resolveUpdateChannel(newConfig.settings);
       configRef.current = newConfig;
       setConfig(newConfig);
+      if (channelChanged && !updateBusyRef.current) setUpdateState({ kind: "idle" });
       pendingSaveRef.current = newConfig;
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => {
@@ -745,6 +779,20 @@ export default function App() {
       }, 400);
     },
     [flushSave],
+  );
+
+  // 渠道切换自动保存并立即检查。忙碌时控件已禁用，这里再阻止重复操作。
+  const handleUpdateChannelChange = useCallback(
+    (channel: UpdateChannel) => {
+      const current = configRef.current;
+      if (!current || updateBusyRef.current || resolveUpdateChannel(current.settings) === channel) return;
+      handleSaveSettings({
+        ...current,
+        settings: { ...current.settings, updateChannel: channel },
+      });
+      void runUpdateCheck(false);
+    },
+    [handleSaveSettings, runUpdateCheck],
   );
 
   // 立即落盘（设置页「刷新数据」前先保证磁盘是最新配置；保存失败重试也走这里）
@@ -1183,6 +1231,7 @@ export default function App() {
           onOpenHelp={() => setHelpOpen(true)}
           onOpenNotifications={openNotifications}
           onRefresh={refresh}
+          onEditAccount={handleEditAccount}
         />
       ) : (
         <SettingsView
@@ -1191,6 +1240,8 @@ export default function App() {
           onRefresh={handleSettingsRefresh}
           addRequest={addRequest}
           onAddRequestHandled={clearAddRequest}
+          editRequest={editRequest}
+          onEditRequestHandled={clearEditRequest}
           saveState={saveState}
           saveError={saveError}
           onRetrySave={handleRetrySave}
@@ -1201,6 +1252,7 @@ export default function App() {
           updateState={updateState}
           appVersion={appVersion}
           onCheckUpdate={handleCheckUpdate}
+          onUpdateChannelChange={handleUpdateChannelChange}
           onInstallUpdate={handleInstallUpdate}
           onRelaunchAfterUpdate={handleRelaunchAfterUpdate}
           onOpenReleasePage={handleOpenReleasePage}
