@@ -1,15 +1,23 @@
 import { useEffect, useState } from "react";
-import type { AccountConfig, AppConfig, ProviderKind, Settings } from "../types";
+import type { AccountConfig, AppConfig, ProviderKind, Settings, UpdateChannel } from "../types";
 import { DEFAULT_BASE_URLS, newAccountId } from "../types";
 import AccountTable from "./AccountTable";
 import AccountForm from "./AccountForm";
 import ThresholdSlider from "./ui/ThresholdSlider";
+import ThemeSettings from "./ThemeSettings";
+import { validateThemeSettings } from "../theme";
 import { InlineNotice, SegmentedControl, SettingRow } from "./ui";
 import { DEFAULT_NOTIFY_THRESHOLDS, resolveAlertSettings } from "../notifications";
 import { isSystemNotifyEnabled, resolveQuotaDetailDisplay } from "../residentSettings";
 import { NOTIFY_PERMISSION_RETRY_LABEL, notificationManualPath } from "../pluginRuntime";
 import { exportUsageCsv } from "../exportReport";
-import { formatProgress, isUpdateBusy, shortUpdateDate, type UpdateState } from "../updater";
+import {
+  formatProgress,
+  isUpdateBusy,
+  resolveUpdateChannel,
+  shortUpdateDate,
+  type UpdateState,
+} from "../updater";
 import * as api from "../api";
 
 /** R16 自启状态（§2）：真值以系统为准，查询中禁用开关 */
@@ -32,6 +40,9 @@ interface Props {
   addRequest?: { kind: ProviderKind; nonce: number } | null;
   /** 请求被消费后调用，App 据此清除（防重挂载复开表单） */
   onAddRequestHandled?: () => void;
+  /** 从看板异常卡片打开指定账号的编辑表单 */
+  editRequest?: { accountId: string; nonce: number } | null;
+  onEditRequestHandled?: () => void;
   /** 自动保存状态（App 层驱动）：saving / saved（短暂浮现）/ error（可重试） */
   saveState: "idle" | "saving" | "saved" | "error";
   saveError?: string;
@@ -52,6 +63,8 @@ interface Props {
   appVersion?: string;
   /** 手动「检查更新」 */
   onCheckUpdate?: () => void;
+  /** 切换更新渠道；App 保存设置并检查新渠道 */
+  onUpdateChannelChange?: (channel: UpdateChannel) => void;
   /** 「立即更新」：下载并安装已发现的更新 */
   onInstallUpdate?: () => void;
   /** 安装完成后重启进新版 */
@@ -65,6 +78,8 @@ interface Props {
  * 判定用非法值优先：组件层面已钳制，这里是「保存前最后一道闸」（AC-9）。
  */
 export function validateSettings(settings: Settings): { ok: true } | { ok: false; message: string } {
+  const themeResult = validateThemeSettings(settings);
+  if (!themeResult.ok) return themeResult;
   const { notifyLowBalanceUsd: usd, notifyLowBalanceCny: cny, notifyQuotaPercent: quota, insightWindowDays: days } =
     settings;
   if (usd != null && (!Number.isFinite(usd) || usd < 0 || usd > 10000))
@@ -75,6 +90,9 @@ export function validateSettings(settings: Settings): { ok: true } | { ok: false
     return { ok: false, message: "配额用量提醒线需为 1–100 的整数" };
   if (days != null && (!Number.isFinite(days) || days < 3 || days > 90 || !Number.isInteger(days)))
     return { ok: false, message: "洞察统计窗口需为 3–90 的整数天" };
+  const updateChannel = settings.updateChannel;
+  if (updateChannel != null && updateChannel !== "stable" && updateChannel !== "nightly")
+    return { ok: false, message: "更新渠道只支持 stable / nightly" };
   // R16：自动重试次数 0–3 整数（Rust 侧 validate_settings 同步）
   const retryMax = settings.refreshRetryMax;
   if (retryMax != null && (!Number.isFinite(retryMax) || retryMax < 0 || retryMax > 3 || !Number.isInteger(retryMax)))
@@ -95,6 +113,8 @@ export default function SettingsView({
   onRefresh,
   addRequest,
   onAddRequestHandled,
+  editRequest,
+  onEditRequestHandled,
   saveState,
   saveError,
   onRetrySave,
@@ -105,6 +125,7 @@ export default function SettingsView({
   updateState,
   appVersion,
   onCheckUpdate,
+  onUpdateChannelChange,
   onInstallUpdate,
   onRelaunchAfterUpdate,
   onOpenReleasePage,
@@ -189,6 +210,14 @@ export default function SettingsView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addRequest, onAddRequestHandled]);
+
+  // 消费看板「编辑配置」请求：定位到对应账号，而不是只打开设置首页。
+  useEffect(() => {
+    if (!editRequest) return;
+    const target = accounts.find((account) => account.id === editRequest.accountId);
+    if (target) setEditing(target);
+    onEditRequestHandled?.();
+  }, [editRequest, accounts, onEditRequestHandled]);
 
   const upsertAccount = (acc: AccountConfig) => {
     const i = accounts.findIndex((a) => a.id === acc.id);
@@ -323,6 +352,17 @@ export default function SettingsView({
         </p>
       )}
 
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="设置分区">
+          <a href="#settings-accounts">账号管理</a>
+          <a href="#settings-appearance">外观</a>
+          <a href="#settings-general">通用</a>
+          <a href="#settings-resident">常驻与通知</a>
+          <a href="#settings-insights">提醒与洞察</a>
+          <a href="#settings-about">关于与更新</a>
+        </nav>
+        <div className="settings-content">
+          <section className="settings-accounts" id="settings-accounts" aria-label="账号列表">
       {accounts.length === 0 ? (
         <div className="empty-state">
           <p className="muted">还没有账号，点击「添加账号」开始。</p>
@@ -344,8 +384,11 @@ export default function SettingsView({
           <kbd>↑</kbd><kbd>↓</kbd> 移动，<kbd>Esc</kbd> 取消。
         </p>
       )}
+          </section>
 
-      <div className="settings-section">
+          <ThemeSettings settings={config.settings} onChange={updateSettings} />
+
+      <div className="settings-section" id="settings-general">
         <h3>通用设置</h3>
         <label className="setting-row column">
           <span>自动刷新间隔（秒，0 = 关闭）</span>
@@ -401,7 +444,7 @@ export default function SettingsView({
       </div>
 
       {/* R16：常驻与通知 —— 自启/托盘/系统通知/自动重试同组归置；改动即时自动保存 */}
-      <div className="settings-section">
+      <div className="settings-section" id="settings-resident">
         <h3>常驻与通知</h3>
         <div className="set-rows">
           {/* §2 开机自启：真值以系统为准（查询中禁用），失败回滚由 App 层执行 */}
@@ -517,7 +560,7 @@ export default function SettingsView({
       </div>
 
       {/* R14：提醒与洞察 —— 阈值从硬编码改为可配置，改动即时自动保存并在下一轮刷新生效 */}
-      <div className="settings-section">
+      <div className="settings-section" id="settings-insights">
         <h3>提醒与洞察</h3>
         <label className="setting-row">
           <span>启用余额 / 配额提醒</span>
@@ -591,7 +634,7 @@ export default function SettingsView({
 
       {/* R22：关于与更新 —— 版本号 + 一键更新。状态由 App 层驱动，本区块只读渲染 + 发起动作；
           文案诚实性：Windows 安装器接管后本应用会被重启，「待重启」提示在 macOS 才是主路径（已注明）。 */}
-      <div className="settings-section">
+      <div className="settings-section" id="settings-about">
         <h3>关于与更新</h3>
         <div className="set-rows">
           <SettingRow
@@ -613,8 +656,27 @@ export default function SettingsView({
             )}
           />
           <SettingRow
+            label="更新渠道"
+            hint="稳定版用于日常使用，nightly 包含最新主线改动。切换后立即检查，可安装另一渠道版本"
+            control={
+              <SegmentedControl
+                options={[
+                  { value: "stable", label: "稳定版" },
+                  { value: "nightly", label: "nightly" },
+                ]}
+                value={resolveUpdateChannel(config.settings)}
+                onChange={(channel) => {
+                  if (onUpdateChannelChange) onUpdateChannelChange(channel);
+                  else updateSettings({ updateChannel: channel });
+                }}
+                ariaLabel="更新渠道"
+                disabled={updateBusy}
+              />
+            }
+          />
+          <SettingRow
             label="启动时自动检查更新"
-            hint="启动约 5 秒后静默检查一次；发现新版本只在顶栏提示（及系统通知，若已开启），不会自动下载"
+            hint="配置加载约 5 秒后静默检查一次；发现新版本只在顶栏提示（及系统通知，若已开启），不会自动下载"
             control={(a) => (
               <input
                 type="checkbox"
@@ -715,6 +777,8 @@ export default function SettingsView({
             </span>
           </InlineNotice>
         )}
+      </div>
+        </div>
       </div>
     </main>
   );

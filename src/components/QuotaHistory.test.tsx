@@ -4,8 +4,10 @@ import QuotaHistory from "./QuotaHistory";
 import type { AccountInfo, QuotaSample } from "../types";
 import { localDateTimeInput } from "../trendHistory";
 
-vi.mock("./charts/lazy", () => ({ LazyQuotaHistoryChart: ({ samples, window, metric }: { samples: QuotaSample[]; window: unknown; metric: string }) =>
-  <div data-testid="quota-chart" data-samples={JSON.stringify(samples)} data-window={JSON.stringify(window)} data-metric={metric} /> }));
+vi.mock("./charts/lazy", () => ({ LazyQuotaHistoryChart: ({ rows, count, events, window, metric }: {
+  rows: unknown; count: number; events: unknown; window: unknown; metric: string;
+}) => <div data-testid="quota-chart" data-rows={JSON.stringify(rows)} data-count={count}
+  data-events={JSON.stringify(events)} data-window={JSON.stringify(window)} data-metric={metric} /> }));
 afterEach(cleanup);
 const ts = (hour: number) => `2026-10-01T0${hour}:00:00Z`;
 const samples: QuotaSample[] = [80, 0, 20].map((usedPercent, i) => ({ ts: ts(i), scope: "workspace", windows: [{ key: "codex:604800", label: "Codex · 每周",
@@ -16,7 +18,9 @@ describe("subscription quota history layout", () => {
   it("defaults to the actual latest segment, including an early ad-hoc reset", () => {
     render(<QuotaHistory samples={samples} info={info} now={Date.parse(ts(3))} />);
     const chart = screen.getByTestId("quota-chart");
-    expect(JSON.parse(chart.getAttribute("data-samples")!)).toHaveLength(2);
+    expect(chart.getAttribute("data-count")).toBe("2");
+    expect(JSON.parse(chart.getAttribute("data-rows")!).map((row: { value: number | null }) => row.value)).toEqual([0, 20]);
+    expect(JSON.parse(chart.getAttribute("data-events")!)).toHaveLength(1);
     expect(JSON.parse(chart.getAttribute("data-window")!).from).toBe(Date.parse(ts(1)));
     expect(screen.getByText(/周期长度不固定/)).toBeTruthy();
     expect(screen.queryByText("余额趋势")).toBeNull();
@@ -26,7 +30,7 @@ describe("subscription quota history layout", () => {
   it("allows full history, 90-day/custom ranges and remaining-percent display", () => {
     render(<QuotaHistory samples={samples} info={info} now={Date.parse(ts(3))} />);
     fireEvent.click(screen.getByRole("button", { name: "全部" }));
-    expect(JSON.parse(screen.getByTestId("quota-chart").getAttribute("data-samples")!)).toHaveLength(3);
+    expect(screen.getByTestId("quota-chart").getAttribute("data-count")).toBe("3");
     fireEvent.click(screen.getByRole("button", { name: "90天" }));
     const range = JSON.parse(screen.getByTestId("quota-chart").getAttribute("data-window")!);
     expect(range.to - range.from).toBe(90 * 86400000);
@@ -51,7 +55,7 @@ describe("subscription quota history layout", () => {
     const chart = () => screen.getByTestId("quota-chart");
     const range = () => JSON.parse(chart().getAttribute("data-window")!);
     expect(range()).toEqual({ from: Date.parse(ts(1)), to: Date.parse(ts(3)) });
-    expect(screen.getByText(/当前范围 2 个采样/)).toBeTruthy();
+    expect(chart().getAttribute("data-count")).toBe("2");
 
     view.rerender(<QuotaHistory samples={samples} info={info} now={Date.parse(ts(4))} />);
     expect(range().to).toBe(Date.parse(ts(4)));
@@ -60,7 +64,7 @@ describe("subscription quota history layout", () => {
     view.rerender(<QuotaHistory samples={refreshed} info={info} now={Date.parse(ts(5))} />);
     expect(range()).toEqual({ from: Date.parse(ts(1)), to: Date.parse(ts(5)) });
     expect(start.value).toBe(fixedStart);
-    expect(screen.getByText(/当前范围 3 个采样/)).toBeTruthy();
+    expect(chart().getAttribute("data-count")).toBe("3");
 
     fireEvent.click(screen.getByRole("button", { name: "7天" }));
     expect(screen.queryByRole("checkbox", { name: "到现在" })).toBeNull();
@@ -70,7 +74,7 @@ describe("subscription quota history layout", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "到现在" }));
     expect(screen.getByLabelText<HTMLInputElement>("结束时间").disabled).toBe(false);
     expect(screen.getByLabelText<HTMLInputElement>("结束时间").value).toBe(originalEnd);
-    expect(screen.getByText(/当前范围 2 个采样/)).toBeTruthy();
+    expect(chart().getAttribute("data-count")).toBe("2");
   });
 
   it("shows local-history errors without inventing an empty allowance", () => {

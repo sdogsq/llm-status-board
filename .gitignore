@@ -6,3 +6,4 @@ src-tauri/gen/
 .DS_Store
 Thumbs.db
 .npm-cache/
+__pycache__/
