@@ -56,6 +56,7 @@ fn point(ts: &str, balance: f64) -> BalanceSnapshot {
         account_id: "a".into(),
         balance,
         currency: "USD".into(),
+        balance_source: None,
         total: None,
     }
 }

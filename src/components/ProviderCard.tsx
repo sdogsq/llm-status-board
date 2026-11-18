@@ -115,6 +115,7 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
   const st = statusClass(outcome, refreshing);
   const brand = providerBrand(account.kind);
   const subscription = account.kind === "openAiSubscription";
+  const aiHubMix = account.kind === "aiHubMix";
   // 当前刷新失败时，历史视图仍使用本账号最近一次已识别工作区的成功信息。
   const historyInfoRef = useRef<{ accountId: string; info: AccountInfo } | null>(null);
   const lastSuccessRef = useRef<{ accountId: string; info: AccountInfo } | null>(null);
@@ -171,7 +172,7 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
   let pct: number | null = null;
   if (used !== undefined && used !== null && total !== undefined && total !== null && total > 0) {
     pct = Math.min(100, Math.max(0, (used / total) * 100));
-  } else if (info?.balance && total) {
+  } else if (!aiHubMix && info?.balance && total) {
     const bal = info.balance.amount;
     if (total > 0) pct = Math.min(100, Math.max(0, ((total - bal) / total) * 100));
   }
@@ -314,7 +315,7 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
           </>
         ) : (
           <>
-            <span className="balance-label">{subscription ? "订阅剩余" : "余额"}</span>
+            <span className="balance-label">{subscription ? "订阅剩余" : aiHubMix ? "Key 剩余额度" : "余额"}</span>
             <span className={`balance-value${lowBalance ? " low" : ""}`}>
               {balanceParts ? (
                 <>
@@ -374,7 +375,7 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
           <span className="row-value">{formatMoney(info?.used)}</span>
         </div>}
         {showTotalRow && <div className="card-row">
-          <span className="row-label">总额度</span>
+          <span className="row-label">{aiHubMix ? "Key 消费上限" : "总额度"}</span>
           <span className="row-value">{formatMoney(info?.total)}</span>
         </div>}
         {showRequestsRow && (

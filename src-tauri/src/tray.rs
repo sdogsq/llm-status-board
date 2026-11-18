@@ -136,11 +136,11 @@ fn account_menu_id(account_id: &str) -> String {
 /// 托盘展示所需数据：启用账号（config.json，提供名字与顺序）+ 上次刷新结果（results.json）。
 /// 读取失败均降级为空——托盘必须总能建出来，不能因文件问题拖垮启动
 fn load_tray_data(app: &AppHandle) -> (Vec<AccountConfig>, Vec<RefreshOutcome>) {
-    let enabled = config::load(app)
+    let enabled: Vec<_> = config::load(app)
         .map(|cfg| cfg.accounts.into_iter().filter(|a| a.enabled).collect())
         .unwrap_or_default();
     let outcomes = config::results_file_path(app)
-        .and_then(|p| config::load_results(&p))
+        .and_then(|p| config::load_results(&p, &enabled))
         .unwrap_or_default();
     (enabled, outcomes)
 }

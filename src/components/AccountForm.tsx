@@ -39,7 +39,7 @@ const AUTH_FIELDS: Record<ProviderKind, AuthField[]> = {  oneApi: [
     { field: "token", label: "access_token (可选)", placeholder: "短期有效，一般留空", type: "password" },
   ],
   aiHubMix: [
-    { field: "apiKey", label: "API Key", placeholder: "AiHubMix API Key", type: "password", hint: "查询总额度与累计用量，余额以美元显示；站点地址保持 https://aihubmix.com，无需添加 /v1" },
+    { field: "apiKey", label: "API Key", placeholder: "AiHubMix API Key", type: "password", hint: "查询 Key 剩余额度和累计用量；站点地址保持 https://aihubmix.com，无需添加 /v1" },
   ],
   deepSeek: [
     { field: "apiKey", label: "API Key", placeholder: "sk-...", type: "password" },

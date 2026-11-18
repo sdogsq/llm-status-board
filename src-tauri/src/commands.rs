@@ -258,6 +258,7 @@ fn balance_snapshots(outcomes: &[RefreshOutcome], ts: &str) -> Vec<BalanceSnapsh
                 account_id: o.account_id.clone(),
                 balance: balance.amount,
                 currency: balance.currency.clone(),
+                balance_source: info.balance_source,
                 total,
             })
         })
@@ -267,13 +268,29 @@ fn balance_snapshots(outcomes: &[RefreshOutcome], ts: &str) -> Vec<BalanceSnapsh
 /// 上次刷新结果（启动时加载展示；无记录返回空数组）
 #[tauri::command]
 pub async fn get_last_results(app: AppHandle) -> Result<Vec<RefreshOutcome>, String> {
-    config::load_results(&config::results_file_path(&app)?)
+    let accounts = config::load(&app)
+        .map(|cfg| cfg.accounts)
+        .unwrap_or_default();
+    config::load_results(&config::results_file_path(&app)?, &accounts)
 }
 
 /// 余额历史快照（趋势图数据源；无记录返回空数组）
 #[tauri::command]
 pub async fn get_history(app: AppHandle) -> Result<Vec<crate::types::BalanceSnapshot>, String> {
-    config::load_history(&config::history_file_path(&app)?)
+    let mut snapshots = config::load_history(&config::history_file_path(&app)?)?;
+    if let Ok(cfg) = config::load(&app) {
+        let aihubmix_ids: std::collections::HashSet<_> = cfg
+            .accounts
+            .iter()
+            .filter(|account| account.kind == crate::types::ProviderKind::AiHubMix)
+            .map(|account| account.id.as_str())
+            .collect();
+        snapshots.retain(|sample| {
+            !aihubmix_ids.contains(sample.account_id.as_str())
+                || !providers::aihubmix::is_invalid_legacy_snapshot(sample)
+        });
+    }
+    Ok(snapshots)
 }
 
 /// 本地用量历史总账（R15 §2）：文件缺失 → `{version:1, records:[]}`；

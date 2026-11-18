@@ -17,7 +17,7 @@ fork 的签名自动更新需要 Actions Secret `TAURI_SIGNING_PRIVATE_KEY`（�
 | one-api / new-api 系（含 one-hub / veloera / done-hub 等） | `/api/user/self` + `/api/log/self/stat`（今日消费） | 访问令牌（推荐）或 API Key |
 | sub2api | API Key 走 `/v1/usage`（一次拿全）；或账号密码 / token 走面板 API | 三选一 |
 | ModelServer（如 code.cs.ac.cn 拼车面板） | refresh_token → 项目钱包余额 + 订阅窗口 | refresh_token |
-| AiHubMix | `/dashboard/billing/subscription` + `/dashboard/billing/usage`（总额度与累计用量） | API Key |
+| AiHubMix | `/dashboard/billing/remain`（Key 剩余额度），另查询消费上限和累计用量 | API Key |
 | 自定义 HTTP | 任意一个 HTTP 请求 + JSON 点路径提取 | 任意 header / body 占位符 |
 
 ### 官方
@@ -110,13 +110,13 @@ macOS 出 `.app` / `.dmg`（需要 Mac 上构建或用下方 CI）。
 
 在「设置 → 添加账号」中选择 **AiHubMix**，站点地址保持 `https://aihubmix.com`（无需添加 `/v1`），填入 AiHubMix API Key 后点击「测试连接」。请求通过 `Authorization: Bearer <API Key>` 认证。
 
-- `GET /dashboard/billing/subscription` 返回 `hard_limit_usd`：总额度，单位美元。
-- `GET /dashboard/billing/usage` 返回 `total_usage`：累计已用额度，单位**美分**；查询不附加月份或日期筛选。
-- 余额（USD）= `hard_limit_usd - total_usage / 100`。应用同时展示总额度与换算后的累计已用额度；超额使用时保留负余额。
+- `GET /dashboard/billing/remain` 的 `total_usage` 是 Key 的剩余额度，单位**美元**。无额度上限的 Key 会单独标明。账户钱包余额可在 AiHubMix 控制台查看。
+- `GET /dashboard/billing/subscription` 的 `hard_limit_usd` 是消费上限，单位美元。面板隐藏 1 亿美元的兼容上限。
+- `GET /dashboard/billing/usage` 的 `total_usage` 是累计已用额度，单位**美分**。面板单独展示这两个接口有效返回的字段。
 
-在账号「详情」中可查看「余额趋势」与「总额度趋势」。总额度取每次成功刷新的 `hard_limit_usd`，积累两次记录后显示曲线；额度不变时显示平线，充值或额度调整后显示阶梯变化。历史记录没有总额度的部分不会补填。
+在账号「详情」中可查看「余额趋势」与「总额度趋势」。两条曲线分别记录 Key 剩余额度和有效的消费上限，不补填缺失的字段。旧版使用兼容上限算出的快照会从趋势中排除。改用直接余额后的第一条记录只建立新的消费基准。
 
-这两个接口不提供按日、按模型或 Token 明细；趋势数据仅来自本地刷新记录，不能查询添加账号之前的历史。
+这些接口不提供按日、按模型或 Token 明细；趋势数据来自本地刷新记录。
 
 ### 历史曲线与时间范围
 
