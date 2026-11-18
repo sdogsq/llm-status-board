@@ -168,6 +168,7 @@ export function localRecordsFromUsedCounter(
   const out: UsageRecord[] = [];
   for (const o of outcomes) {
     if (!o.ok || !o.info || !o.info.used) continue;
+    if (o.info.openAiBilling) continue; // Costs 已提供每日实账，跨月累计金额不能用于差分。
     if (o.info.balance) continue; // 有余额走 B1，不走 used 计数器
     const usedNow = numOrNull(o.info.used.amount);
     if (usedNow === null) continue;

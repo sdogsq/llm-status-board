@@ -94,6 +94,7 @@ async fn fetch_with_token(
         quota_scope: None,
         quota_history_error: None,
         balance_source: None,
+        open_ai_billing: None,
         balance: Some(Money {
             amount: quota / per,
             currency: "USD".into(),
