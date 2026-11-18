@@ -73,8 +73,8 @@ describe("AiHubMix account setup", () => {
     renderForm();
     fireEvent.click(screen.getByRole("button", { name: "怎么获取凭证？" }));
     expect(screen.getByText(/AiHubMix 的 API Key，无需访问令牌或用户 ID/)).toBeTruthy();
-    expect(screen.getByText(/接口用量单位为美分，应用自动换算为美元/)).toBeTruthy();
-    expect(screen.getByText(/计费接口不提供按日、按模型或 Token 明细/)).toBeTruthy();
+    expect(screen.getByText(/Key 剩余额度以美元显示，累计用量单独查询并由美分换算为美元/)).toBeTruthy();
+    expect(screen.getByText(/账户钱包余额可在 AiHubMix 控制台查看/)).toBeTruthy();
   });
 
   it("shows billing errors when testing the connection fails", async () => {

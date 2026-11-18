@@ -408,6 +408,8 @@ pub struct QuotaWindow {
 #[derive(Default)]
 pub struct AccountInfo {
     pub balance: Option<Money>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_source: Option<BalanceSource>,
     pub used: Option<Money>,
     pub total: Option<Money>,
     pub requests: Option<i64>,
@@ -446,6 +448,13 @@ pub struct RefreshOutcome {
     pub history_error: Option<String>,
 }
 
+/// 区分不可直接比较的余额口径。旧记录缺省为原来的口径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BalanceSource {
+    AiHubMixRemain,
+}
+
 /// 余额与总额度历史快照；旧记录缺少 total 时仍可直接读取。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -455,6 +464,8 @@ pub struct BalanceSnapshot {
     pub account_id: String,
     pub balance: f64,
     pub currency: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_source: Option<BalanceSource>,
     /// 与余额同币种的总额度；不从余额推算或补填旧记录。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<f64>,
@@ -510,6 +521,8 @@ pub struct BalanceCheckpoint {
     /// 成功查询不再提供余额时置空，避免与 used 计数器路径重复计费。
     pub balance: Option<f64>,
     pub currency: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_source: Option<BalanceSource>,
     /// 从余额模式切入 used 模式的边界，旧 usedTotal 不能跨过此边界复用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used_mode_since: Option<String>,

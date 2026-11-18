@@ -95,6 +95,8 @@ describe("ProviderCard：AiHubMix", () => {
       }),
     });
     expect(tileText(".kind-badge")).toBe("AiHubMix");
+    expect(tileText(".balance-label")).toBe("Key 剩余额度");
+    expect(screen.getByText("Key 消费上限")).toBeTruthy();
     expect(tileText(".balance-num")).toBe("150.52");
     expect(tileText(".balance-currency")).toBe("USD");
     expect(screen.getByText("29,370.46 USD")).toBeTruthy();

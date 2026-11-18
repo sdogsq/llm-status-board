@@ -1,6 +1,7 @@
 use crate::types::{
-    AppConfig, BalanceSnapshot, RefreshOutcome, UsageHistoryFile, UsageRecord,
-    USAGE_CURRENCY_UNKNOWN, USAGE_HISTORY_VERSION, USAGE_SOURCE_LOCAL, USAGE_SOURCE_SITE,
+    AccountConfig, AppConfig, BalanceSnapshot, ProviderKind, RefreshOutcome, UsageHistoryFile,
+    UsageRecord, USAGE_CURRENCY_UNKNOWN, USAGE_HISTORY_VERSION, USAGE_SOURCE_LOCAL,
+    USAGE_SOURCE_SITE,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -62,12 +63,24 @@ pub fn save_results(path: &Path, outcomes: &[RefreshOutcome]) -> Result<(), Stri
 }
 
 /// 读取上次刷新结果；文件不存在返回空数组（首次启动）
-pub fn load_results(path: &Path) -> Result<Vec<RefreshOutcome>, String> {
+pub fn load_results(
+    path: &Path,
+    accounts: &[AccountConfig],
+) -> Result<Vec<RefreshOutcome>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let text = fs::read_to_string(path).map_err(|e| format!("读取结果失败: {e}"))?;
-    serde_json::from_str(&text).map_err(|e| format!("结果文件格式错误: {e}"))
+    let mut outcomes: Vec<RefreshOutcome> =
+        serde_json::from_str(&text).map_err(|e| format!("结果文件格式错误: {e}"))?;
+    for outcome in &mut outcomes {
+        if accounts.iter().any(|account| {
+            account.kind == ProviderKind::AiHubMix && account.id == outcome.account_id
+        }) {
+            crate::providers::aihubmix::invalidate_legacy_balance(outcome);
+        }
+    }
+    Ok(outcomes)
 }
 
 /// 每次成功查询都记录采样时间，包括余额或总额度不变的情况。
@@ -147,6 +160,7 @@ fn retain_history(snapshots: Vec<BalanceSnapshot>, now_ms: i64) -> Vec<BalanceSn
         at == bt
             && a.account_id == b.account_id
             && a.currency == b.currency
+            && a.balance_source == b.balance_source
             && a.balance == b.balance
             && a.total == b.total
     });
@@ -540,6 +554,7 @@ mod tests {
             account_id: account.into(),
             balance,
             currency: "USD".into(),
+            balance_source: None,
             total: None,
         }
     }
@@ -797,7 +812,7 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         // 首次启动：文件不存在 → 空数组
-        assert!(load_results(&path).unwrap().is_empty());
+        assert!(load_results(&path, &[]).unwrap().is_empty());
 
         // 写入两条结果（一成功一失败）
         let outcomes = vec![
@@ -825,7 +840,7 @@ mod tests {
         ];
         save_results(&path, &outcomes).unwrap();
 
-        let back = load_results(&path).unwrap();
+        let back = load_results(&path, &[]).unwrap();
         assert_eq!(back.len(), 2);
         assert!(back[0].ok);
         assert_eq!(
@@ -845,7 +860,7 @@ mod tests {
 
         // 损坏文件 → 可读错误
         fs::write(&path, "###").unwrap();
-        let err = load_results(&path).expect_err("损坏结果应报错");
+        let err = load_results(&path, &[]).expect_err("损坏结果应报错");
         assert!(err.contains("结果文件格式错误"), "错误应可读: {err}");
         let _ = fs::remove_file(&path);
     }

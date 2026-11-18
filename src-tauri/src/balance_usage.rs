@@ -1,9 +1,10 @@
 //! 余额差分的持久化增量账本。调用方先原子保存 records + checkpoints，再清理曲线快照。
 use crate::types::{
-    BalanceCheckpoint, BalanceSnapshot, UsageHistoryFile, UsageRecord, USAGE_SOURCE_LOCAL,
+    BalanceCheckpoint, BalanceSnapshot, BalanceSource, UsageHistoryFile, UsageRecord,
+    USAGE_SOURCE_LOCAL,
 };
 use chrono::{DateTime, FixedOffset};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 fn currency(value: &str) -> String {
     let value = value.trim().to_uppercase();
@@ -24,8 +25,18 @@ pub fn ingest(
 ) {
     let mut by_account: BTreeMap<&str, Vec<(DateTime<FixedOffset>, &BalanceSnapshot)>> =
         BTreeMap::new();
+    let corrected_aihubmix: HashSet<_> = snapshots
+        .iter()
+        .filter(|s| s.balance_source == Some(BalanceSource::AiHubMixRemain))
+        .map(|s| s.account_id.as_str())
+        .collect();
     for snapshot in snapshots {
         if !snapshot.balance.is_finite() || !account_ids.contains(&snapshot.account_id) {
+            continue;
+        }
+        if corrected_aihubmix.contains(snapshot.account_id.as_str())
+            && crate::providers::aihubmix::is_invalid_legacy_snapshot(snapshot)
+        {
             continue;
         }
         if let Ok(ts) = DateTime::parse_from_rfc3339(&snapshot.ts) {
@@ -64,6 +75,7 @@ pub fn ingest(
                                 ts: ts.to_rfc3339(),
                                 balance: None,
                                 currency: "UNKNOWN".into(),
+                                balance_source: None,
                                 used_mode_since: None,
                             },
                         )
@@ -102,7 +114,9 @@ pub fn ingest(
             let date = ts.date_naive().to_string(); // 保留采样时间自身的时区日期。
             if let Some(prior) = previous
                 .as_ref()
-                .filter(|p| currency(&p.currency) == unit)
+                .filter(|p| {
+                    currency(&p.currency) == unit && p.balance_source == snapshot.balance_source
+                })
                 .and_then(|p| p.balance)
             {
                 let drop = prior - snapshot.balance;
@@ -134,12 +148,13 @@ pub fn ingest(
                     }
                 }
             }
-            // 充值、零变化、site 优先、币种切换也前移，避免下一次跨过这些边界。
+            // 充值、零变化、site 优先、币种或余额口径切换也前移，避免跨边界计费。
             previous = Some(BalanceCheckpoint {
                 account_id: account.into(),
                 ts: snapshot.ts.clone(),
                 balance: Some(snapshot.balance),
                 currency: unit,
+                balance_source: snapshot.balance_source,
                 used_mode_since: None,
             });
             changed = true;
@@ -175,6 +190,7 @@ pub fn reset(file: &mut UsageHistoryFile, account_ids: &[String], ts: &str) {
             ts: ts.into(),
             balance: None,
             currency: "UNKNOWN".into(),
+            balance_source: None,
             used_mode_since,
         };
         match file
@@ -200,6 +216,7 @@ mod tests {
             account_id: "a".into(),
             balance,
             currency: currency.into(),
+            balance_source: None,
             total: None,
         }
     }
@@ -225,6 +242,33 @@ mod tests {
         let saved = file.clone();
         apply(&mut file, &[next]);
         assert_eq!(file, saved, "重复刷新、重新加载均不得重复计费");
+    }
+
+    #[test]
+    fn ai_hub_mix_switch_keeps_prior_spend_and_does_not_charge_the_balance_correction() {
+        let mut file = UsageHistoryFile::default();
+        let mut inflated = point("2026-10-23T10:30:00Z", 99_999_990.0, "USD");
+        inflated.total = Some(100_000_000.0);
+        apply(
+            &mut file,
+            &[
+                point("2026-10-23T09:00:00Z", 100.0, "USD"),
+                point("2026-10-23T10:00:00Z", 90.0, "USD"),
+                inflated,
+            ],
+        );
+        assert_eq!(sum(&file), 10.0);
+        assert_eq!(file.balance_checkpoints[0].balance, Some(99_999_990.0));
+        let mut corrected = point("2026-10-23T11:00:00Z", 1535.257862, "USD");
+        corrected.balance_source = Some(BalanceSource::AiHubMixRemain);
+        apply(&mut file, std::slice::from_ref(&corrected));
+        assert_eq!(sum(&file), 10.0);
+        let mut next = corrected.clone();
+        next.ts = "2026-10-23T11:30:00Z".into();
+        next.balance -= 1.0;
+        let mut file = serde_json::from_slice(&serde_json::to_vec(&file).unwrap()).unwrap();
+        apply(&mut file, &[corrected, next]);
+        assert_eq!(sum(&file), 11.0);
     }
 
     #[test]

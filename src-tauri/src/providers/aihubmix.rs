@@ -1,8 +1,14 @@
-//! AiHubMix API Key 计费查询。总额度为美元，累计用量为美分；不附加日期筛选。
+//! AiHubMix Key 余额直接以美元返回；累计用量以美分返回。
 
 use crate::http;
-use crate::types::{AccountConfig, AccountInfo, Money};
+use crate::types::BalanceSource::AiHubMixRemain;
+use crate::types::{AccountConfig, AccountInfo, BalanceSnapshot, Money, RefreshOutcome};
 use serde_json::{json, Value};
+
+// AiHubMix can report this compatibility limit even when usable credits are far lower.
+const COMPATIBILITY_LIMIT_USD: f64 = 100_000_000.0;
+// /remain uses -1 internal quota unit (-1 / 500,000 USD) for an unlimited key.
+const UNLIMITED_REMAINING: f64 = -0.000_002;
 
 pub async fn fetch(client: &reqwest::Client, acc: &AccountConfig) -> Result<AccountInfo, String> {
     let key = acc.api_key.trim();
@@ -15,52 +21,81 @@ pub async fn fetch(client: &reqwest::Client, acc: &AccountConfig) -> Result<Acco
         (header.as_str(), value),
         ("Accept", "application/json".to_string()),
     ];
-    let subscription = http::send_json(
-        client,
-        "GET",
-        &format!("{base}/dashboard/billing/subscription"),
-        &headers,
-        None,
-    )
-    .await
-    .map_err(|e| format!("AiHubMix 查询总额度失败: {e}"))?;
-    let usage = http::send_json(
-        client,
-        "GET",
-        &format!("{base}/dashboard/billing/usage"),
-        &headers,
-        None,
-    )
-    .await
-    .map_err(|e| format!("AiHubMix 查询用量失败: {e}"))?;
-
-    parse_billing(subscription, usage)
+    let remain_url = format!("{base}/dashboard/billing/remain");
+    let subscription_url = format!("{base}/dashboard/billing/subscription");
+    let usage_url = format!("{base}/dashboard/billing/usage");
+    let (remaining, subscription, usage) = tokio::join!(
+        http::send_json(client, "GET", &remain_url, &headers, None),
+        http::send_json(client, "GET", &subscription_url, &headers, None),
+        http::send_json(client, "GET", &usage_url, &headers, None),
+    );
+    let remaining = remaining.map_err(|e| format!("AiHubMix 查询 Key 剩余额度失败: {e}"))?;
+    parse_billing(remaining, subscription.ok(), usage.ok())
 }
 
-fn billing_amount(response: &Value, field: &str) -> Result<f64, String> {
+fn billing_amount(response: &Value, field: &str) -> Option<f64> {
     let amount = match response.get(field) {
         Some(Value::Number(n)) => n.as_f64(),
         Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
         _ => None,
     };
-    amount
-        .filter(|n| n.is_finite() && *n >= 0.0)
-        .ok_or_else(|| format!("AiHubMix 响应缺少有效的 {field}（应为非负有限数值）"))
+    amount.filter(|n| n.is_finite())
 }
 
-fn parse_billing(subscription: Value, usage: Value) -> Result<AccountInfo, String> {
-    let total = billing_amount(&subscription, "hard_limit_usd")?;
-    let used = billing_amount(&usage, "total_usage")? / 100.0;
+fn is_compatibility_limit(total: Option<f64>) -> bool {
+    total == Some(COMPATIBILITY_LIMIT_USD)
+}
+
+/// Match old AiHubMix-only observations that used the compatibility limit as credit.
+pub(crate) fn is_invalid_legacy_snapshot(snapshot: &BalanceSnapshot) -> bool {
+    snapshot.balance_source.is_none() && is_compatibility_limit(snapshot.total)
+}
+
+/// Old cached results with the compatibility limit must wait for a new balance query.
+pub(crate) fn invalidate_legacy_balance(outcome: &mut RefreshOutcome) {
+    let Some(info) = &outcome.info else { return };
+    let legacy = info.balance_source.is_none()
+        && info.raw.as_ref().is_some_and(|raw| {
+            raw.get("usage").is_some()
+                && raw.get("subscription").is_some_and(|sub| {
+                    is_compatibility_limit(billing_amount(sub, "hard_limit_usd"))
+                })
+        });
+    if legacy {
+        outcome.ok = false;
+        outcome.info = None;
+        outcome.error = Some("AiHubMix 旧余额使用了兼容上限，请刷新以查询 Key 剩余额度。".into());
+    }
+}
+
+fn parse_billing(
+    remaining: Value,
+    subscription: Option<Value>,
+    usage: Option<Value>,
+) -> Result<AccountInfo, String> {
+    let remaining_usd = billing_amount(&remaining, "total_usage")
+        .ok_or_else(|| "AiHubMix 剩余额度响应缺少有效的 total_usage".to_string())?;
+    let unlimited = remaining_usd == UNLIMITED_REMAINING;
+    let total = subscription
+        .as_ref()
+        .and_then(|sub| billing_amount(sub, "hard_limit_usd"));
+    let used = usage
+        .as_ref()
+        .and_then(|usage| billing_amount(usage, "total_usage"))
+        .filter(|n| *n >= 0.0)
+        .map(|cents| cents / 100.0);
+    let total = total.filter(|n| !unlimited && *n >= 0.0 && !is_compatibility_limit(Some(*n)));
     let usd = |amount| Money {
         amount,
         currency: "USD".into(),
     };
     Ok(AccountInfo {
-        balance: Some(usd(total - used)),
-        used: Some(usd(used)),
-        total: Some(usd(total)),
-        note: Some("AiHubMix 总额度与累计用量（USD）".into()),
-        raw: Some(json!({ "subscription": subscription, "usage": usage })),
+        balance: (!unlimited).then(|| usd(remaining_usd)),
+        balance_source: Some(AiHubMixRemain),
+        used: used.map(usd),
+        total: total.map(usd),
+        note: unlimited.then(|| "此 Key 无额度上限。账户余额请在 AiHubMix 控制台查看。".into()),
+        raw: Some(json!({ "remain": remaining, "subscription": subscription, "usage": usage })),
         fetched_at: crate::types::now_iso(),
         ..Default::default()
     })
@@ -76,74 +111,70 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn converts_cents_before_calculating_balance() {
-        let subscription = json!({ "hard_limit_usd": 29520.97954 });
-        let usage = json!({ "total_usage": 2937045.8762 });
-        let info = parse_billing(subscription.clone(), usage.clone()).unwrap();
+    fn uses_the_reported_balance_and_keeps_billing_fields_independent() {
+        let info = parse_billing(
+            json!({"object": "list", "total_usage": 1535.257862}),
+            Some(json!({"hard_limit_usd": 3000.0})),
+            Some(json!({"total_usage": 100_000.0})),
+        )
+        .unwrap();
         let balance = info.balance.unwrap();
-        let used = info.used.unwrap();
-        let total = info.total.unwrap();
-        assert!((balance.amount - 150.520778).abs() < 1e-8);
-        assert!((used.amount - 29370.458762).abs() < 1e-8);
-        assert_eq!(total.amount, 29520.97954);
-        for money in [balance, used, total] {
-            assert_eq!(money.currency, "USD");
-        }
-        assert_eq!(
-            info.raw.unwrap(),
-            json!({ "subscription": subscription, "usage": usage })
-        );
-        assert!(!info.fetched_at.is_empty());
-        assert!(info.daily_usage.is_empty());
-        assert!(info.model_usage.is_empty());
+        assert_eq!(balance.amount, 1535.257862);
+        assert_eq!(balance.currency, "USD");
+        assert_eq!(info.used.unwrap().amount, 1000.0);
+        assert_eq!(info.total.unwrap().amount, 3000.0);
+        assert_eq!(info.balance_source, Some(AiHubMixRemain));
     }
 
     #[test]
-    fn accepts_numeric_strings_zero_and_overdrawn_balances() {
-        for (total, cents, expected) in
-            [(" 10.50 ", "250", 8.0), ("0", "0", 0.0), ("1", "150", -0.5)]
-        {
-            let info = parse_billing(
-                json!({ "hard_limit_usd": total }),
-                json!({ "total_usage": cents }),
-            )
-            .unwrap();
-            assert_eq!(info.balance.unwrap().amount, expected);
+    fn accepts_zero_and_overdrawn_balances_and_handles_the_unlimited_marker() {
+        for (remaining, expected) in [
+            (" 0 ", Some(0.0)),
+            ("-0.5", Some(-0.5)),
+            ("-0.000002", None),
+        ] {
+            let info = parse_billing(json!({"total_usage": remaining}), None, None).unwrap();
+            assert_eq!(info.balance.map(|amount| amount.amount), expected);
+            assert_eq!(info.note.is_some(), expected.is_none());
         }
     }
 
     #[test]
-    fn rejects_missing_malformed_negative_and_non_finite_amounts() {
-        let valid_subscription = json!({ "hard_limit_usd": 10 });
-        let valid_usage = json!({ "total_usage": 100 });
+    fn rejects_invalid_balances_even_when_the_old_inputs_are_available() {
+        let subscription = json!({"hard_limit_usd": 10});
+        let usage = json!({"total_usage": 100});
         for bad in [
             Value::Null,
             json!(true),
             json!([]),
-            json!({}),
             json!(""),
-            json!("not a number"),
             json!("NaN"),
-            json!("inf"),
             json!("1e999"),
-            json!(-1),
-            json!("-1"),
         ] {
-            let err =
-                parse_billing(json!({ "hard_limit_usd": bad }), valid_usage.clone()).unwrap_err();
-            assert!(err.contains("hard_limit_usd"), "{err}");
-            let err = parse_billing(valid_subscription.clone(), json!({ "total_usage": bad }))
-                .unwrap_err();
-            assert!(err.contains("total_usage"), "{err}");
+            let error = parse_billing(
+                json!({"total_usage": bad}),
+                Some(subscription.clone()),
+                Some(usage.clone()),
+            )
+            .unwrap_err();
+            assert!(error.contains("total_usage"), "{error}");
         }
-        assert!(parse_billing(json!({}), valid_usage)
-            .unwrap_err()
-            .contains("hard_limit_usd"));
-        assert!(
-            parse_billing(valid_subscription, json!({ "error": "invalid key" }))
-                .unwrap_err()
-                .contains("total_usage")
-        );
+    }
+
+    #[test]
+    fn old_compatibility_limit_cache_requires_a_refresh() {
+        let mut result: RefreshOutcome = serde_json::from_value(json!({
+            "accountId": "a", "ok": true, "error": null,
+            "info": {
+                "balance": {"amount": 99_999_999.0, "currency": "USD"},
+                "raw": {"subscription": {"hard_limit_usd": 100_000_000.0}, "usage": {"total_usage": 100}},
+                "extras": [], "fetchedAt": "2026-11-18T00:00:00Z"
+            }
+        })).unwrap();
+        invalidate_legacy_balance(&mut result);
+        assert!(!result.ok);
+        assert!(result.info.is_none());
+        assert!(result.error.unwrap().contains("请刷新"));
     }
 
     #[test]
@@ -199,6 +230,7 @@ mod tests {
     // A local HTTP fixture checks real request paths, headers, status handling,
     // and dispatch without provider credentials or external network access.
     fn billing_server(
+        remain_status: u16,
         subscription_status: u16,
         usage_status: u16,
     ) -> (String, thread::JoinHandle<Vec<String>>) {
@@ -207,9 +239,8 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let handle = thread::spawn(move || {
             let mut requests = Vec::new();
-            let expected = if subscription_status == 200 { 2 } else { 1 };
             let deadline = Instant::now() + Duration::from_secs(5);
-            while requests.len() < expected {
+            while requests.len() < 3 {
                 let (mut stream, _) = match listener.accept() {
                     Ok(connection) => connection,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -221,9 +252,13 @@ mod tests {
                 };
                 let request = read_billing_request(&mut stream);
                 let (status, body) = match request.lines().next().unwrap() {
+                    "GET /dashboard/billing/remain HTTP/1.1" => (
+                        remain_status,
+                        json!({ "object": "list", "total_usage": 1535.257862 }),
+                    ),
                     "GET /dashboard/billing/subscription HTTP/1.1" => (
                         subscription_status,
-                        json!({ "hard_limit_usd": 29520.97954 }),
+                        json!({ "hard_limit_usd": 100_000_000 }),
                     ),
                     "GET /dashboard/billing/usage HTTP/1.1" => {
                         (usage_status, json!({ "total_usage": 2937045.8762 }))
@@ -248,8 +283,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatches_both_billing_requests_with_bearer_key_and_no_date_filter() {
-        let (base, server) = billing_server(200, 200);
+    async fn fetches_key_quota_with_bearer_and_hides_the_compatibility_limit() {
+        let (base, server) = billing_server(200, 200, 200);
         let acc = AccountConfig {
             kind: ProviderKind::AiHubMix,
             base_url: format!(" {base}/ "),
@@ -260,7 +295,7 @@ mod tests {
             .await
             .unwrap();
         let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         for request in requests {
             assert!(request
                 .to_ascii_lowercase()
@@ -269,25 +304,32 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("\r\naccept: application/json\r\n"));
         }
-        assert!((info.balance.unwrap().amount - 150.520778).abs() < 1e-8);
+        assert_eq!(info.balance.unwrap().amount, 1535.257862);
+        assert_eq!(info.used.unwrap().amount, 29370.458762);
+        assert!(info.total.is_none());
     }
 
     #[tokio::test]
-    async fn reports_failure_from_either_billing_endpoint() {
-        for (subscription_status, usage_status, context) in
-            [(401, 200, "查询总额度失败"), (200, 503, "查询用量失败")]
-        {
-            let (base, server) = billing_server(subscription_status, usage_status);
-            let acc = AccountConfig {
+    async fn only_a_failure_to_fetch_remaining_quota_fails_the_balance_query() {
+        for (remain, subscription, usage) in [(200, 503, 503), (401, 200, 200)] {
+            let (base, server) = billing_server(remain, subscription, usage);
+            let account = AccountConfig {
                 kind: ProviderKind::AiHubMix,
                 base_url: base,
                 api_key: "test-aihubmix-key".into(),
                 ..Default::default()
             };
-            let err = fetch(&client(), &acc).await.unwrap_err();
+            let result = fetch(&client(), &account).await;
             server.join().unwrap();
-            assert!(err.contains(context), "{err}");
-            assert!(err.contains("billing request rejected"), "{err}");
+            if remain == 200 {
+                let info = result.unwrap();
+                assert_eq!(info.balance.unwrap().amount, 1535.257862);
+                assert!(info.used.is_none() && info.total.is_none());
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.contains("查询 Key 剩余额度失败"), "{error}");
+                assert!(error.contains("billing request rejected"), "{error}");
+            }
         }
     }
 
