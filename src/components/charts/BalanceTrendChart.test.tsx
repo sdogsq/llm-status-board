@@ -58,6 +58,18 @@ describe("BalanceTrendChart", () => {
     expect(screen.getByText("余额")).toBeTruthy();
   });
 
+  it("累计已用独立读取用量快照，无余额仍可绘制且缺少记录不补零", () => {
+    const points = [
+      { ...snapshots[0], balance: null, used: 0 },
+      { ...snapshots[1] },
+      { ...snapshots[4], balance: null, used: 33640.19 },
+    ];
+    render(<BalanceTrendChart snapshots={points} accountId="a1" metric="used" />);
+    expect(amounts()).toEqual([0, 33640.19]);
+    expect(screen.getByTestId("line").getAttribute("data-type")).toBe("linear");
+    expect(screen.getByText("累计已用")).toBeTruthy();
+  });
+
   it("仅一个有效总额度时展示说明，不因已有多个余额快照绘制总额度", () => {
     render(<BalanceTrendChart snapshots={snapshots.slice(0, 3)} accountId="a1" metric="total" emptyNote="需要两次额度记录" />);
     expect(screen.queryByTestId("trend")).toBeNull();

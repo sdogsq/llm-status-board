@@ -455,20 +455,23 @@ pub enum BalanceSource {
     AiHubMixRemain,
 }
 
-/// 余额与总额度历史快照；旧记录缺少 total 时仍可直接读取。
+/// 金额历史快照；只有累计用量时也能记录采样。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceSnapshot {
     /// 刷新时间（ISO8601）
     pub ts: String,
     pub account_id: String,
-    pub balance: f64,
+    pub balance: Option<f64>,
     pub currency: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance_source: Option<BalanceSource>,
     /// 与余额同币种的总额度；不从余额推算或补填旧记录。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<f64>,
+    /// 站点提供的累计已用金额，币种与此快照一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<f64>,
 }
 
 // ---------- 本地用量历史（R15 usage-history.json） ----------
@@ -772,8 +775,9 @@ mod tests {
         let list: Vec<BalanceSnapshot> = serde_json::from_str(legacy).expect("旧 history 必须可读");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].account_id, "a1");
-        assert_eq!(list[0].balance, 18.0);
+        assert_eq!(list[0].balance, Some(18.0));
         assert_eq!(list[0].total, None);
+        assert_eq!(list[0].used, None);
 
         let back = serde_json::to_string(&list[0]).unwrap();
         assert_eq!(

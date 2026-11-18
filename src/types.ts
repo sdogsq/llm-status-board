@@ -172,14 +172,17 @@ export interface QuotaSample {
   windows: QuotaHistoryPoint[];
 }
 
-/** 余额与总额度历史快照（旧记录没有 total） */
+/** 金额历史快照，允许仅记录累计已用。 */
 export interface BalanceSnapshot {
   ts: string;
   accountId: string;
-  balance: number;
+  balance: number | null;
   currency: string;
   total?: number | null;
+  used?: number | null;
 }
+
+export type SnapshotMetric = "balance" | "used" | "total";
 
 /* ---------- R15：本地用量历史（usage-history.json，与 Rust 侧 serde camelCase 对应） ---------- */
 

@@ -163,6 +163,7 @@ fn retain_history(snapshots: Vec<BalanceSnapshot>, now_ms: i64) -> Vec<BalanceSn
             && a.balance_source == b.balance_source
             && a.balance == b.balance
             && a.total == b.total
+            && a.used == b.used
     });
     let mut counts = HashMap::new();
     let mut retained: Vec<_> = dated
@@ -552,10 +553,11 @@ mod tests {
         BalanceSnapshot {
             ts: ts.to_rfc3339(),
             account_id: account.into(),
-            balance,
+            balance: Some(balance),
             currency: "USD".into(),
             balance_source: None,
             total: None,
+            used: None,
         }
     }
 
@@ -579,7 +581,7 @@ mod tests {
             history.iter().map(|s| s.total).collect::<Vec<_>>(),
             vec![None, Some(100.0), Some(100.0), Some(150.0)]
         );
-        assert!(history.iter().all(|s| s.balance == 10.0));
+        assert!(history.iter().all(|s| s.balance == Some(10.0)));
         let _ = fs::remove_file(&path);
     }
 
@@ -632,7 +634,7 @@ mod tests {
                 .find(|s| s.account_id == "busy")
                 .unwrap()
                 .balance,
-            5.0
+            Some(5.0)
         );
         assert_eq!(
             retained.iter().filter(|s| s.account_id == "quiet").count(),
@@ -663,7 +665,7 @@ mod tests {
         );
         assert_eq!(
             retained.iter().map(|s| s.balance).collect::<Vec<_>>(),
-            vec![1.0, 2.0]
+            vec![Some(1.0), Some(2.0)]
         );
     }
 

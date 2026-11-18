@@ -14,7 +14,7 @@ import { formatDecimal } from "../../format";
 import { ChartEmpty, usePrefersReducedMotion } from "./shared";
 import { SERIES_COLORS } from "./GlobalDailyUsageChart";
 import TrendRangeControls, { useTrendRange } from "../TrendRangeControls";
-import { sampleTrendRows, TREND_GAP_MS, trendTick, trendTicks } from "../../trendHistory";
+import { hasSnapshotBalance, sampleTrendRows, TREND_GAP_MS, trendTick, trendTicks } from "../../trendHistory";
 
 interface Props {
   snapshots: BalanceSnapshot[];
@@ -72,21 +72,21 @@ export default function GlobalBalanceTrendChart({ snapshots, accounts }: Props) 
   const reducedMotion = usePrefersReducedMotion();
   const available = useMemo(() => {
     const ids = new Set(accounts.filter((a) => a.enabled).map((a) => a.id));
-    return snapshots.filter((s) => ids.has(s.accountId) && Number.isFinite(Date.parse(s.ts)) && Number.isFinite(s.balance));
+    return snapshots.filter(hasSnapshotBalance).filter((s) => ids.has(s.accountId) && Number.isFinite(Date.parse(s.ts)));
   }, [snapshots, accounts]);
   const range = useTrendRange(available);
   const { rows, series, currency } = useMemo(() => {
     const nameOf = new Map(accounts.map((a) => [a.id, a.name || a.id]));
 
     // 按币种分组 → 取「有快照的账号数」最多的币种（并列时取快照更多的）
-    const byCurrency = new Map<string, BalanceSnapshot[]>();
+    const byCurrency = new Map<string, typeof available>();
     for (const s of available) {
       const list = byCurrency.get(s.currency) ?? [];
       list.push(s);
       byCurrency.set(s.currency, list);
     }
     let currency = "";
-    let best: BalanceSnapshot[] = [];
+    let best: typeof available = [];
     for (const [cur, list] of byCurrency) {
       const curAccounts = new Set(list.map((s) => s.accountId)).size;
       const bestAccounts = new Set(best.map((s) => s.accountId)).size;
@@ -97,7 +97,7 @@ export default function GlobalBalanceTrendChart({ snapshots, accounts }: Props) 
     }
 
     // 该币种下按账号分组，按最新余额取前 6
-    const byAccount = new Map<string, BalanceSnapshot[]>();
+    const byAccount = new Map<string, typeof available>();
     for (const s of range.filtered) {
       if (s.currency !== currency) continue;
       const list = byAccount.get(s.accountId) ?? [];

@@ -51,6 +51,25 @@ pub(crate) fn is_invalid_legacy_snapshot(snapshot: &BalanceSnapshot) -> bool {
     snapshot.balance_source.is_none() && is_compatibility_limit(snapshot.total)
 }
 
+/// Reverse the legacy formula for old AiHubMix snapshots. Direct balances cannot
+/// be subtracted from a spending limit to recover usage.
+pub(crate) fn prepare_history_snapshot(snapshot: &mut BalanceSnapshot) {
+    if snapshot.balance_source.is_some() {
+        return;
+    }
+    if snapshot.currency == "USD" && snapshot.used.is_none() {
+        snapshot.used = snapshot
+            .total
+            .zip(snapshot.balance)
+            .map(|(total, balance)| total - balance)
+            .filter(|used| used.is_finite() && *used >= 0.0);
+    }
+    if is_invalid_legacy_snapshot(snapshot) {
+        snapshot.balance = None;
+        snapshot.total = None;
+    }
+}
+
 /// Old cached results with the compatibility limit must wait for a new balance query.
 pub(crate) fn invalidate_legacy_balance(outcome: &mut RefreshOutcome) {
     let Some(info) = &outcome.info else { return };
@@ -109,6 +128,24 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn recovers_only_usage_that_can_be_proven_from_the_legacy_formula() {
+        let mut snapshot: BalanceSnapshot = serde_json::from_value(json!({
+            "ts": "2026-11-17T12:00:00Z", "accountId": "a", "currency": "USD",
+            "total": 100_000_000.0, "balance": 99_966_360.0
+        }))
+        .unwrap();
+        let mut with_direct_balance = snapshot.clone();
+        with_direct_balance.balance_source = Some(AiHubMixRemain);
+        prepare_history_snapshot(&mut with_direct_balance);
+        assert_eq!(with_direct_balance.used, None);
+
+        prepare_history_snapshot(&mut snapshot);
+        assert_eq!(snapshot.used, Some(33_640.0));
+        assert_eq!(snapshot.balance, None);
+        assert_eq!(snapshot.total, None);
+    }
 
     #[test]
     fn uses_the_reported_balance_and_keeps_billing_fields_independent() {
