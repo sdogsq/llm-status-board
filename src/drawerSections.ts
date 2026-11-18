@@ -10,7 +10,7 @@
 //                       这里按同一语义一并折叠（纯扩展，不改任何数据口径）。
 
 import { validQuotaWindows } from "./primaryMetric";
-import type { AccountInfo, BalanceSnapshot, UsagePoint } from "./types";
+import type { AccountInfo, BalanceSnapshot, SnapshotMetric, UsagePoint } from "./types";
 
 function hasAnyMetricPoint(points?: readonly UsagePoint[] | null): boolean {
   if (!points || points.length === 0) return false;
@@ -45,25 +45,25 @@ export function hasTokenSplitData(points?: readonly UsagePoint[] | null): boolea
 
 /** balance：该账号余额快照数 ≥ 2 */
 export function hasBalanceTrendData(snapshots: readonly BalanceSnapshot[], accountId: string): boolean {
-  let count = 0;
-  for (const s of snapshots) {
-    if (s && s.accountId === accountId) count += 1;
-  }
-  return count >= 2;
+  return balanceSnapshotCount(snapshots, accountId) >= 2;
 }
 
 /** 该账号余额快照条数（供 1 条时的专属折叠说明用，规格 §3） */
 export function balanceSnapshotCount(snapshots: readonly BalanceSnapshot[], accountId: string): number {
-  let count = 0;
-  for (const s of snapshots) {
-    if (s && s.accountId === accountId) count += 1;
-  }
-  return count;
+  return snapshotMetricCount(snapshots, accountId, "balance");
 }
 
 /** 只统计实际记录过总额度的快照，0 也有效。 */
 export function totalSnapshotCount(snapshots: readonly BalanceSnapshot[], accountId: string): number {
-  return snapshots.filter((s) => s.accountId === accountId && typeof s.total === "number" && Number.isFinite(s.total)).length;
+  return snapshotMetricCount(snapshots, accountId, "total");
+}
+
+export function snapshotMetricCount(snapshots: readonly BalanceSnapshot[], accountId: string, metric: SnapshotMetric): number {
+  let count = 0;
+  for (const snapshot of snapshots) {
+    if (snapshot?.accountId === accountId && Number.isFinite(snapshot[metric])) count += 1;
+  }
+  return count;
 }
 
 /** breakdown（扩展）：额度构成是否有可画数据 */

@@ -12,17 +12,20 @@ vi.mock("./charts/lazy", () => ({
 afterEach(cleanup);
 const now = new Date(2026, 9, 22, 12).getTime();
 const hour = 3_600_000;
-const snapshots = [now - 72 * hour, now - 2 * hour, now - 30 * 60_000, now].map((ts) => ({ accountId: "a1", ts: new Date(ts).toISOString(), balance: 10, total: 100, currency: "USD" }));
-const setup = (points = snapshots) => render(<AccountTrends accountId="a1" snapshots={points} info={{ fetchedAt: "", extras: [], total: { amount: 100, currency: "USD" } }} now={now} />);
+const snapshots = [now - 72 * hour, now - 2 * hour, now - 30 * 60_000, now].map((ts) => ({ accountId: "a1", ts: new Date(ts).toISOString(), balance: 10, total: 100, used: 90, currency: "USD" }));
+const setup = (points = snapshots) => render(<AccountTrends accountId="a1" snapshots={points} info={{ fetchedAt: "", extras: [], total: { amount: 100, currency: "USD" } }} now={now} showUsedTrend />);
 
 describe("账号共用趋势筛选", () => {
-  it("默认显示全部，切换24小时与7天会同时更新余额和总额度", () => {
+  it("默认显示全部，切换24小时与7天会同时更新三个趋势", () => {
     setup();
     expect(screen.getByRole("button", { name: "全部" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("balance-chart").getAttribute("data-points")).toBe("4");
     fireEvent.click(screen.getByRole("button", { name: "24小时" }));
-    for (const metric of ["balance", "total"]) expect(screen.getByTestId(`${metric}-chart`).getAttribute("data-points")).toBe("3");
-    expect(screen.getByTestId("balance-chart").getAttribute("data-window")).toBe(screen.getByTestId("total-chart").getAttribute("data-window"));
+    for (const metric of ["balance", "used", "total"]) {
+      const chart = screen.getByTestId(`${metric}-chart`);
+      expect(chart.getAttribute("data-points")).toBe("3");
+      expect(chart.getAttribute("data-window")).toBe(screen.getByTestId("balance-chart").getAttribute("data-window"));
+    }
     fireEvent.click(screen.getByRole("button", { name: "7天" }));
     expect(screen.getByTestId("total-chart").getAttribute("data-points")).toBe("4");
   });
@@ -47,8 +50,8 @@ describe("账号共用趋势筛选", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "到现在" }));
     const refreshed = [...snapshots, { ...snapshots[3], ts: new Date(now + hour).toISOString() },
       { ...snapshots[3], ts: new Date(now + 2 * hour).toISOString() }];
-    view.rerender(<AccountTrends accountId="a1" snapshots={refreshed} info={{ fetchedAt: "", extras: [] }} now={now + hour} />);
-    for (const metric of ["balance", "total"]) {
+    view.rerender(<AccountTrends accountId="a1" snapshots={refreshed} info={{ fetchedAt: "", extras: [] }} now={now + hour} showUsedTrend />);
+    for (const metric of ["balance", "used", "total"]) {
       const chart = screen.getByTestId(`${metric}-chart`);
       expect(chart.getAttribute("data-points")).toBe("4");
       expect(JSON.parse(chart.getAttribute("data-window")!)).toEqual({ from, to: now + hour });

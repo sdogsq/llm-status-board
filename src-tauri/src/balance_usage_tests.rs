@@ -54,10 +54,11 @@ fn point(ts: &str, balance: f64) -> BalanceSnapshot {
     BalanceSnapshot {
         ts: ts.into(),
         account_id: "a".into(),
-        balance,
+        balance: Some(balance),
         currency: "USD".into(),
         balance_source: None,
         total: None,
+        used: None,
     }
 }
 
@@ -81,7 +82,7 @@ fn spend_10_prune_at_150000_then_spend_1_still_persists_11() {
         .unwrap();
     let retained = load_history(&fixture.history()).unwrap();
     assert_eq!(retained.len(), MAX_HISTORY_PER_ACCOUNT);
-    assert_eq!(retained[0].balance, 90.0, "早期100快照已真实淘汰");
+    assert_eq!(retained[0].balance, Some(90.0), "早期100快照已真实淘汰");
     assert_eq!(fixture.sum(), 11.0);
     let saved = fixture.ledger(); // 模拟下一次刷新从磁盘重载，不能依赖内存基准。
     fixture.record(&[next], "2026-10-23T12:00:00Z").unwrap();

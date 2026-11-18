@@ -31,7 +31,10 @@ pub fn ingest(
         .map(|s| s.account_id.as_str())
         .collect();
     for snapshot in snapshots {
-        if !snapshot.balance.is_finite() || !account_ids.contains(&snapshot.account_id) {
+        if snapshot.balance.is_some_and(|amount| !amount.is_finite())
+            || (snapshot.balance.is_none() && !snapshot.used.is_some_and(f64::is_finite))
+            || !account_ids.contains(&snapshot.account_id)
+        {
             continue;
         }
         if corrected_aihubmix.contains(snapshot.account_id.as_str())
@@ -110,6 +113,17 @@ pub fn ingest(
             if watermark.is_some_and(|watermark| ts <= watermark) {
                 continue;
             }
+            let Some(balance) = snapshot.balance else {
+                // Replay a successful used-only observation as the same boundary
+                // that the live refresh records when switching away from balance.
+                previous = Some(no_balance_checkpoint(
+                    account,
+                    &snapshot.ts,
+                    previous.as_ref(),
+                ));
+                changed = true;
+                continue;
+            };
             let unit = currency(&snapshot.currency);
             let date = ts.date_naive().to_string(); // 保留采样时间自身的时区日期。
             if let Some(prior) = previous
@@ -119,7 +133,7 @@ pub fn ingest(
                 })
                 .and_then(|p| p.balance)
             {
-                let drop = prior - snapshot.balance;
+                let drop = prior - balance;
                 // 非法旧 updatedAt 无法证明哪些金额未入账：保留已有整日值，避免重复计费。
                 let already_counted = legacy
                     .get(&date)
@@ -152,7 +166,7 @@ pub fn ingest(
             previous = Some(BalanceCheckpoint {
                 account_id: account.into(),
                 ts: snapshot.ts.clone(),
-                balance: Some(snapshot.balance),
+                balance: Some(balance),
                 currency: unit,
                 balance_source: snapshot.balance_source,
                 used_mode_since: None,
@@ -178,21 +192,7 @@ pub fn reset(file: &mut UsageHistoryFile, account_ids: &[String], ts: &str) {
             .balance_checkpoints
             .iter()
             .find(|c| c.account_id == *account);
-        let used_mode_since = prior.and_then(|c| {
-            if c.balance.is_some() {
-                Some(ts.into())
-            } else {
-                c.used_mode_since.clone()
-            }
-        });
-        let next = BalanceCheckpoint {
-            account_id: account.clone(),
-            ts: ts.into(),
-            balance: None,
-            currency: "UNKNOWN".into(),
-            balance_source: None,
-            used_mode_since,
-        };
+        let next = no_balance_checkpoint(account, ts, prior);
         match file
             .balance_checkpoints
             .iter_mut()
@@ -206,6 +206,27 @@ pub fn reset(file: &mut UsageHistoryFile, account_ids: &[String], ts: &str) {
         .sort_by(|a, b| a.account_id.cmp(&b.account_id));
 }
 
+fn no_balance_checkpoint(
+    account_id: &str,
+    ts: &str,
+    prior: Option<&BalanceCheckpoint>,
+) -> BalanceCheckpoint {
+    BalanceCheckpoint {
+        account_id: account_id.into(),
+        ts: ts.into(),
+        balance: None,
+        currency: "UNKNOWN".into(),
+        balance_source: None,
+        used_mode_since: prior.and_then(|c| {
+            if c.balance.is_some() {
+                Some(ts.into())
+            } else {
+                c.used_mode_since.clone()
+            }
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,10 +235,11 @@ mod tests {
         BalanceSnapshot {
             ts: ts.into(),
             account_id: "a".into(),
-            balance,
+            balance: Some(balance),
             currency: currency.into(),
             balance_source: None,
             total: None,
+            used: None,
         }
     }
     fn apply(file: &mut UsageHistoryFile, points: &[BalanceSnapshot]) {
@@ -265,10 +287,28 @@ mod tests {
         assert_eq!(sum(&file), 10.0);
         let mut next = corrected.clone();
         next.ts = "2026-10-23T11:30:00Z".into();
-        next.balance -= 1.0;
+        next.balance = next.balance.map(|amount| amount - 1.0);
         let mut file = serde_json::from_slice(&serde_json::to_vec(&file).unwrap()).unwrap();
         apply(&mut file, &[corrected, next]);
         assert_eq!(sum(&file), 11.0);
+    }
+
+    #[test]
+    fn replayed_usage_samples_do_not_count_as_balance_or_bridge_balance_modes() {
+        let mut file = UsageHistoryFile::default();
+        let mut used_only = point("2026-10-23T10:00:00Z", 0.0, "USD");
+        used_only.balance = None;
+        used_only.used = Some(33_640.0);
+        apply(
+            &mut file,
+            &[
+                point("2026-10-23T09:00:00Z", 100.0, "USD"),
+                used_only,
+                point("2026-10-23T11:00:00Z", 80.0, "USD"),
+                point("2026-10-23T12:00:00Z", 79.0, "USD"),
+            ],
+        );
+        assert_eq!(sum(&file), 1.0);
     }
 
     #[test]

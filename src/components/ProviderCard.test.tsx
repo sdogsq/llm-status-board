@@ -4,18 +4,18 @@
 // 图表一律替身（不引 recharts），QuotaWindowBars 走真实现。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import ProviderCard from "./ProviderCard";
 import * as api from "../api";
-import type { AccountConfig, AccountInfo, BalanceSnapshot, QuotaSample, RefreshOutcome } from "../types";
+import type { AccountConfig, AccountInfo, BalanceSnapshot, QuotaSample, RefreshOutcome, SnapshotMetric } from "../types";
 
 vi.mock("../api", () => ({ getQuotaHistory: vi.fn() }));
 
 vi.mock("./charts/lazy", () => ({
   LazyDailyUsageChart: () => <div data-testid="daily-chart" />,
   LazyModelUsageChart: () => <div data-testid="model-chart" />,
-  LazyBalanceTrendChart: ({ metric = "balance" }: { metric?: "balance" | "total" }) => <div data-testid={`${metric}-chart`} />,
+  LazyBalanceTrendChart: ({ metric = "balance" }: { metric?: SnapshotMetric }) => <div data-testid={`${metric}-chart`} />,
   LazyBalanceBreakdownChart: () => <div data-testid="breakdown-chart" />,
   LazyTokenSplitChart: () => <div data-testid="token-chart" />,
   LazyQuotaHistoryChart: () => <div data-testid="quota-history-chart" />,
@@ -93,6 +93,10 @@ describe("ProviderCard：AiHubMix", () => {
         used: { amount: 29370.458762, currency: "USD" },
         total: { amount: 29520.97954, currency: "USD" },
       }),
+      snapshots: [
+        { accountId: "aihubmix", ts: "2026-10-19T10:00:00Z", balance: 155.52, currency: "USD", used: 29365.46 },
+        { accountId: "aihubmix", ts: "2026-10-19T11:00:00Z", balance: 150.52, currency: "USD", used: 29370.46 },
+      ],
     });
     expect(tileText(".kind-badge")).toBe("AiHubMix");
     expect(tileText(".balance-label")).toBe("Key 剩余额度");
@@ -102,6 +106,11 @@ describe("ProviderCard：AiHubMix", () => {
     expect(screen.getByText("29,370.46 USD")).toBeTruthy();
     expect(screen.getByText("29,520.98 USD")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /详情/ }));
+    const drawer = within(screen.getByRole("dialog"));
+    const cumulativeUsage = drawer.getByText("累计已用趋势");
+    expect(drawer.getByTestId("used-chart")).toBeTruthy();
+    expect(drawer.getByText("余额趋势").compareDocumentPosition(cumulativeUsage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(cumulativeUsage.compareDocumentPosition(drawer.getByText("总额度趋势")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByText("AiHubMix 计费接口仅提供累计用量，无按日、按模型或 Token 明细").length).toBeGreaterThan(0);
   });
 });

@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { BalanceSnapshot } from "../../types";
+import type { BalanceSnapshot, SnapshotMetric } from "../../types";
 import { formatDecimal } from "../../format";
 import { ChartEmpty, usePrefersReducedMotion } from "./shared";
 import { historyBounds, resolveTrendWindow, sampleTrendRows, TREND_GAP_MS, trendTick, trendTicks } from "../../trendHistory";
@@ -17,7 +17,7 @@ import type { TrendWindow } from "../../trendHistory";
 interface Props {
   snapshots: BalanceSnapshot[];
   accountId: string;
-  metric?: "balance" | "total";
+  metric?: SnapshotMetric;
   window?: TrendWindow;
   /** 空数据时的具体原因说明 */
   emptyNote?: string;
@@ -32,8 +32,10 @@ interface Row {
 interface TipProps {
   active?: boolean;
   payload?: ReadonlyArray<{ payload: Row }>;
-  metric: "balance" | "total";
+  metric: SnapshotMetric;
 }
+
+const METRIC_LABELS: Record<SnapshotMetric, string> = { balance: "余额", used: "累计已用", total: "总额度" };
 
 function TrendTip({ active, payload, metric }: TipProps) {
   if (!active || !payload || payload.length === 0) return null;
@@ -43,7 +45,7 @@ function TrendTip({ active, payload, metric }: TipProps) {
     <div className="chart-tooltip">
       <div className="tt-title">{new Date(r.timestamp).toLocaleString("zh-CN", { hour12: false })}</div>
       <div className="tt-row">
-        <span>{metric === "total" ? "总额度" : "余额"}</span>
+        <span>{METRIC_LABELS[metric]}</span>
         <b>
           {formatDecimal(r.amount)} {r.currency}
         </b>
@@ -52,7 +54,7 @@ function TrendTip({ active, payload, metric }: TipProps) {
   );
 }
 
-/** 单账号余额或总额度趋势（数据点 <2 时降级为占位） */
+/** 单账号金额趋势（数据点 <2 时降级为占位） */
 export default function BalanceTrendChart({ snapshots, accountId, metric = "balance", window, emptyNote }: Props) {
   const reducedMotion = usePrefersReducedMotion();
   const { rows, chartWindow, count } = useMemo(() => {
@@ -83,7 +85,7 @@ export default function BalanceTrendChart({ snapshots, accountId, metric = "bala
   return (
     <div>
       <div className="trend-unit">{rows[rows.length - 1]?.currency}</div>
-      <ResponsiveContainer width="100%" height={metric === "balance" ? 220 : 140} className="chart-box">
+      <ResponsiveContainer width="100%" height={metric === "total" ? 140 : 220} className="chart-box">
         <LineChart data={rows} syncId={`account-trend-${accountId}`} syncMethod="value" margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
           <XAxis

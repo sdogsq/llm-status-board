@@ -247,17 +247,24 @@ fn balance_snapshots(outcomes: &[RefreshOutcome], ts: &str) -> Vec<BalanceSnapsh
         .filter(|o| o.ok)
         .filter_map(|o| {
             let info = o.info.as_ref()?;
-            let balance = info.balance.as_ref().filter(|b| b.amount.is_finite())?;
+            let balance = info.balance.as_ref().filter(|b| b.amount.is_finite());
+            let used = info.used.as_ref().filter(|u| {
+                info.balance_source == Some(crate::types::BalanceSource::AiHubMixRemain)
+                    && u.amount.is_finite()
+                    && u.amount >= 0.0
+            });
+            let currency = balance.or(used)?.currency.clone();
             let total = info
                 .total
                 .as_ref()
-                .filter(|t| t.currency == balance.currency && t.amount.is_finite())
+                .filter(|t| balance.is_some() && t.currency == currency && t.amount.is_finite())
                 .map(|t| t.amount);
             Some(BalanceSnapshot {
                 ts: ts.to_owned(),
                 account_id: o.account_id.clone(),
-                balance: balance.amount,
-                currency: balance.currency.clone(),
+                balance: balance.map(|b| b.amount),
+                used: used.filter(|u| u.currency == currency).map(|u| u.amount),
+                currency,
                 balance_source: info.balance_source,
                 total,
             })
@@ -285,9 +292,11 @@ pub async fn get_history(app: AppHandle) -> Result<Vec<crate::types::BalanceSnap
             .filter(|account| account.kind == crate::types::ProviderKind::AiHubMix)
             .map(|account| account.id.as_str())
             .collect();
-        snapshots.retain(|sample| {
-            !aihubmix_ids.contains(sample.account_id.as_str())
-                || !providers::aihubmix::is_invalid_legacy_snapshot(sample)
+        snapshots.retain_mut(|sample| {
+            if aihubmix_ids.contains(sample.account_id.as_str()) {
+                providers::aihubmix::prepare_history_snapshot(sample);
+            }
+            sample.balance.is_some() || sample.used.is_some() || sample.total.is_some()
         });
     }
     Ok(snapshots)
@@ -390,7 +399,7 @@ mod tests {
             let snapshots = balance_snapshots(&[result], "2026-10-19T10:00:00Z");
             assert_eq!(snapshots.len(), 1);
             assert_eq!(snapshots[0].total, expected);
-            assert_eq!(snapshots[0].balance, 10.0);
+            assert_eq!(snapshots[0].balance, Some(10.0));
             assert_eq!(snapshots[0].currency, "USD");
             assert_eq!(snapshots[0].ts, "2026-10-19T10:00:00Z");
         }
@@ -419,6 +428,23 @@ mod tests {
         assert!(
             balance_snapshots(&[failed, no_balance, no_info, invalid_balance], "now").is_empty()
         );
+    }
+
+    #[test]
+    fn aihubmix_usage_is_sampled_even_when_the_key_has_no_balance_limit() {
+        let mut result = outcome(None);
+        let info = result.info.as_mut().unwrap();
+        info.balance = None;
+        info.balance_source = Some(crate::types::BalanceSource::AiHubMixRemain);
+        info.used = Some(Money {
+            amount: 33_640.19,
+            currency: "USD".into(),
+        });
+        let snapshots = balance_snapshots(&[result], "2026-11-18T00:00:00Z");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].balance, None);
+        assert_eq!(snapshots[0].used, Some(33_640.19));
+        assert_eq!(snapshots[0].currency, "USD");
     }
 
     #[test]

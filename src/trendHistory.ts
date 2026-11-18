@@ -37,12 +37,16 @@ export function resolveTrendWindow(selection: TrendSelection, bounds: [number, n
   return { from: now - duration, to: now };
 }
 
-export function filterTrendSnapshots(snapshots: readonly BalanceSnapshot[], window: TrendWindow): BalanceSnapshot[] {
+export function filterTrendSnapshots<T extends BalanceSnapshot>(snapshots: readonly T[], window: TrendWindow): T[] {
   if (window.error) return [];
   return snapshots.filter((s) => {
     const ts = Date.parse(s.ts);
     return Number.isFinite(ts) && ts >= window.from && ts <= window.to;
   });
+}
+
+export function hasSnapshotBalance(snapshot: BalanceSnapshot): snapshot is BalanceSnapshot & { balance: number } {
+  return typeof snapshot.balance === "number" && Number.isFinite(snapshot.balance);
 }
 
 export function localDateTimeInput(ts: number): string {

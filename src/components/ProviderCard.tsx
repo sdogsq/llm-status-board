@@ -21,6 +21,7 @@ import { MiniSparkline } from "./ui";
 import { providerBrand } from "../providerBrand";
 import { accountCostForDate } from "../dashboardData";
 import { toLocalDateKey } from "../usageHistory";
+import { hasSnapshotBalance } from "../trendHistory";
 
 /** 外部「跳转到账号」请求（命令面板 / 数字键 1-9），由 App 经 Dashboard 透传 */
 export interface FocusRequest {
@@ -218,11 +219,11 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
   const balanceTrend = useMemo(() => {
     if (metric.kind === "quota" || !balance) return [] as number[];
     return snapshots
+      .filter(hasSnapshotBalance)
       .filter((s) =>
         s.accountId === account.id &&
         s.currency === balance.currency &&
-        Number.isFinite(Date.parse(s.ts)) &&
-        Number.isFinite(s.balance),
+        Number.isFinite(Date.parse(s.ts)),
       )
       .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
       .slice(-24)
@@ -231,7 +232,8 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
 
   const latestSnapshot = useMemo(() => {
     const sorted = snapshots
-      .filter((s) => s.accountId === account.id && Number.isFinite(Date.parse(s.ts)) && Number.isFinite(s.balance))
+      .filter(hasSnapshotBalance)
+      .filter((s) => s.accountId === account.id && Number.isFinite(Date.parse(s.ts)))
       .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
     return sorted[sorted.length - 1] ?? null;
   }, [snapshots, account.id]);
@@ -504,7 +506,7 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
         >
           <div className="drawer-charts">
             {subscription ? <QuotaHistory key={`${account.id}:${historyInfo?.quotaScope ?? ""}`} samples={quotaHistory.samples} info={historyInfo} error={quotaHistory.error} now={historyNow} /> : <>
-            <AccountTrends accountId={account.id} snapshots={snapshots} info={info} now={historyNow} balanceEmptyNote={chartEmptyNote("balance")} />
+            <AccountTrends accountId={account.id} snapshots={snapshots} info={info} now={historyNow} balanceEmptyNote={chartEmptyNote("balance")} showUsedTrend={aiHubMix} />
             <DrawerSection title="额度构成" hasData={flags.breakdown} emptyNote={chartEmptyNote("breakdown")}>
               <BalanceBreakdownChart info={info} emptyNote={chartEmptyNote("breakdown")} />
             </DrawerSection>

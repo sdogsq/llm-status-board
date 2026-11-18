@@ -3,7 +3,7 @@ import type { BalanceSnapshot } from "../types";
 import { filterTrendSnapshots, historyBounds, localDateTimeInput, resolveTrendWindow, TREND_RANGES } from "../trendHistory";
 import type { TrendSelection, TrendWindow } from "../trendHistory";
 
-export function useTrendRange(snapshots: BalanceSnapshot[], now = Date.now()) {
+export function useTrendRange<T extends BalanceSnapshot>(snapshots: T[], now = Date.now()) {
   const [selection, setSelection] = useState<TrendSelection>({ preset: "all", from: "", to: "" });
   const bounds = useMemo(() => historyBounds(snapshots), [snapshots]);
   const window = useMemo(() => resolveTrendWindow(selection, bounds, now), [selection, bounds, now]);
