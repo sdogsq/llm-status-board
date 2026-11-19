@@ -371,8 +371,16 @@ export default function ProviderCard({ account, outcome, refreshing, snapshots, 
         {openAi && <>
           <div className="card-row">
             <span className="row-label">今日花费</span>
-            <span className="row-value">{formatMoney(todayCost)}</span>
+            <span className="row-value" title={info?.openAiBilling?.costsError ?? undefined}>
+              {info?.openAiBilling?.costsError ? "查询失败" : formatMoney(todayCost)}
+            </span>
           </div>
+          {info?.openAiBilling?.usageError && (
+            <div className="card-row">
+              <span className="row-label">模型用量</span>
+              <span className="row-value" title={info.openAiBilling.usageError}>查询失败</span>
+            </div>
+          )}
           <div className="card-row">
             <span className="row-label">组织月度上限</span>
             <span className="row-value" title={info?.openAiBilling?.limitError ?? undefined}>

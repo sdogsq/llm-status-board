@@ -223,7 +223,13 @@ export interface UsageHistoryFile {
 
 export interface AccountInfo {
   balance?: Money | null;
-  openAiBilling?: { spendLimit: Money | null; enforcing: boolean; limitError: string | null } | null;
+  openAiBilling?: {
+    spendLimit: Money | null;
+    enforcing: boolean;
+    limitError: string | null;
+    costsError?: string | null;
+    usageError?: string | null;
+  } | null;
   used?: Money | null;
   total?: Money | null;
   requests?: number | null;
