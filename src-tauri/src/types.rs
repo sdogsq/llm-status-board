@@ -409,6 +409,10 @@ pub struct OpenAiBilling {
     pub spend_limit: Option<Money>,
     pub enforcing: bool,
     pub limit_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub costs_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

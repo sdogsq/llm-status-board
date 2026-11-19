@@ -1471,6 +1471,28 @@ button.error-copy.copied .copy-hint {
   align-self: stretch;
 }
 
+.usage-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.usage-chart-controls .metric-tabs {
+  margin-bottom: 0;
+}
+
+.chart-currency-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-1);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
 .metric-tabs {
   display: inline-flex;
   gap: 2px;

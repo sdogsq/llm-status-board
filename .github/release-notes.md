@@ -1,7 +1,7 @@
-OpenAI API 卡片升级为组织用量看板，支持 API Platform Admin Key。
+OpenAI API 的请求次数和模型用量现已纳入全局统计，刷新账号即可查看。
 
-- 卡片显示 UTC 今日花费、月初至今花费和组织月度消费上限。若启用了硬上限执行，会显示使用进度。
-- 详情新增每日花费、月内累计花费、Token 和请求数趋势，以及模型用量排名。支持本月、7／30／90 天和自定义日期，可按项目及项目 API Key 筛选。
-- 花费取自官方 Costs 接口。Token 和请求数来自 Responses／Chat Completions。部分读取权限缺失时，可用的数据仍会显示。
+- 「用量趋势」按最近 7、14 或 30 个日历日展示请求次数及费用，缺失日期留空。OpenAI 费用支持跨月查看，费用图可按币种切换。
+- 「模型用量」可按请求次数或 Token 排行。OpenAI 使用近 30 个 UTC 日的组织数据，覆盖 Responses 和 Chat Completions。其他站点使用各自返回的统计区间。
+- 总览的 OpenAI 今日花费以 UTC 为准。费用与用量分别查询，单个接口失败时可继续查看另一项数据，并保留已记录的同日数据。
 
-支持 Windows x64、macOS Apple Silicon 和 Intel。可从本 fork 的 v0.2.12 及以上版本通过「设置 → 关于与更新」升级。
+支持 Windows x64、macOS Apple Silicon 和 Intel。从本 fork 的 v0.2.12 及以上版本可通过「设置 → 关于与更新」升级。

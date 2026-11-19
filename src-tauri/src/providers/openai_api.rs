@@ -9,6 +9,7 @@ use url::Url;
 const ORIGIN: &str = "https://api.openai.com";
 const MAX_PAGES: usize = 32;
 const MAX_DAYS: i64 = 90;
+const SUMMARY_DAYS: u64 = 30;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +57,16 @@ impl Usage {
             sum_optional(self.cached_input_tokens, row.input_cached_tokens, first);
         self.cache_write_tokens =
             sum_optional(self.cache_write_tokens, row.input_cache_write_tokens, first);
+    }
+
+    fn into_point(self) -> UsagePoint {
+        UsagePoint {
+            requests: Some(i64::try_from(self.requests).unwrap_or(i64::MAX)),
+            input_tokens: Some(self.input_tokens as f64),
+            output_tokens: Some(self.output_tokens as f64),
+            tokens: Some(self.input_tokens.saturating_add(self.output_tokens) as f64),
+            ..Default::default()
+        }
     }
 }
 
@@ -292,25 +303,24 @@ impl<'a> Api<'a> {
             let day = bucket_date(bucket.start_time, from, end)?;
             let day_usage = days.entry(day).or_default();
             for row in bucket.results {
-                let name = row.model.as_deref().unwrap_or("未归类模型");
+                let name = row
+                    .model
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or("未归类模型");
                 add_usage(models.entry(name.to_owned()).or_default(), &row);
                 add_usage(day_usage, &row);
             }
         }
-        let mut models: Vec<_> = models
-            .into_iter()
-            .map(|(name, (usage, _))| Model { name, usage })
-            .collect();
-        models.sort_by_key(|m| {
-            std::cmp::Reverse(m.usage.input_tokens.saturating_add(m.usage.output_tokens))
-        });
-        models.truncate(8);
         Ok(CompletionStats {
             days: days
                 .into_iter()
                 .map(|(day, (usage, _))| (day, usage))
                 .collect(),
-            models,
+            models: models
+                .into_iter()
+                .map(|(name, (usage, _))| Model { name, usage })
+                .collect(),
         })
     }
 
@@ -401,15 +411,43 @@ pub async fn fetch(
 }
 
 async fn summary(api: &Api<'_>, now: DateTime<Utc>) -> Result<AccountInfo, String> {
-    let start = month_start(now.date_naive());
+    let today = now.date_naive();
+    let month = month_start(today);
+    let start = today.checked_sub_days(Days::new(SUMMARY_DAYS - 1)).unwrap();
     let filter = Filter::default();
-    let end = now.timestamp().max(midnight(start) + 1);
-    let (costs, limit) = tokio::join!(
-        api.costs(start, end, &filter),
+    let end = now.timestamp().max(midnight(today) + 1);
+    let (costs, usage, limit) = tokio::join!(
+        api.costs(start.min(month), end, &filter),
+        api.completions(start, end, &filter),
         api.get::<SpendLimit>(api.endpoint("spend_limit")),
     );
-    let costs = costs.map_err(|error| format!("OpenAI 本月花费查询失败：{error}"))?;
-    let billing = match limit {
+    let (used, costs_error, currency, costs) = match costs.and_then(|costs| {
+        let amount = costs.days.range(month..).map(|(_, cost)| cost).sum::<f64>();
+        if !amount.is_finite() {
+            return Err("OpenAI 本月花费金额无效".into());
+        }
+        Ok((
+            Money {
+                amount,
+                currency: costs.currency,
+            },
+            costs.days,
+        ))
+    }) {
+        Ok((used, costs)) => (Some(used.clone()), None, Some(used.currency), costs),
+        Err(error) => (None, Some(error), None, BTreeMap::new()),
+    };
+    let (usage, usage_error) = match usage {
+        Ok(usage) => (usage, None),
+        Err(error) => (CompletionStats::default(), Some(error)),
+    };
+    if let (Some(costs_error), Some(usage_error)) = (&costs_error, &usage_error) {
+        return Err(format!(
+            "OpenAI 花费查询失败：{costs_error}；模型用量查询失败：{usage_error}"
+        ));
+    }
+
+    let mut billing = match limit {
         Ok(limit)
             if limit.interval == "month"
                 && limit.currency.eq_ignore_ascii_case("USD")
@@ -422,6 +460,8 @@ async fn summary(api: &Api<'_>, now: DateTime<Utc>) -> Result<AccountInfo, Strin
                 }),
                 enforcing: limit.enforcement.status == "enforcing",
                 limit_error: None,
+                costs_error: None,
+                usage_error: None,
             }
         }
         other => OpenAiBilling {
@@ -432,29 +472,39 @@ async fn summary(api: &Api<'_>, now: DateTime<Utc>) -> Result<AccountInfo, Strin
                     .err()
                     .unwrap_or_else(|| "OpenAI 返回了无法识别的上限".into()),
             ),
+            costs_error: None,
+            usage_error: None,
         },
     };
-    let amount: f64 = costs.days.values().sum();
-    if !amount.is_finite() {
-        return Err("OpenAI 本月花费金额无效".into());
+    billing.costs_error = costs_error;
+    billing.usage_error = usage_error;
+
+    let mut days = BTreeMap::new();
+    for (date, usage) in usage.days {
+        let mut point = usage.into_point();
+        point.date = Some(date.to_string());
+        point.cost_unit = currency.clone();
+        days.insert(date, point);
+    }
+    for (date, cost) in costs {
+        let point = days.entry(date).or_default();
+        point.date.get_or_insert_with(|| date.to_string());
+        point.cost = Some(cost);
+        point.cost_unit = currency.clone();
     }
     Ok(AccountInfo {
-        used: Some(Money {
-            amount,
-            currency: costs.currency.clone(),
-        }),
-        daily_usage: costs
-            .days
+        used,
+        daily_usage: days.into_values().collect(),
+        model_usage: usage
+            .models
             .into_iter()
-            .map(|(date, cost)| UsagePoint {
-                date: Some(date.to_string()),
-                cost: Some(cost),
-                cost_unit: Some(costs.currency.clone()),
-                ..Default::default()
+            .map(|model| UsagePoint {
+                model: Some(model.name),
+                ..model.usage.into_point()
             })
             .collect(),
         open_ai_billing: Some(billing),
-        fetched_at: crate::types::now_iso(),
+        fetched_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         ..Default::default()
     })
 }
@@ -549,6 +599,10 @@ fn assemble_report(
             });
         }
     }
+    usage.models.sort_by_key(|m| {
+        std::cmp::Reverse(m.usage.input_tokens.saturating_add(m.usage.output_tokens))
+    });
+    usage.models.truncate(8);
     Report {
         days,
         models: usage.models,
@@ -578,6 +632,10 @@ mod tests {
 
     fn cost(amount: f64) -> Value {
         json!({"object":"organization.costs.result", "line_item":"fixture line", "amount":{"currency":"usd","value":amount}})
+    }
+
+    fn completion(model: &str, input: u64, output: u64, requests: u64) -> Value {
+        json!({"model":model,"input_tokens":input,"output_tokens":output,"num_model_requests":requests})
     }
 
     fn mock_server(
@@ -634,28 +692,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summary_keeps_daily_costs_when_limit_permission_is_missing() {
-        let (origin, server) = mock_server(3, |url| {
+    async fn summary_combines_unfiltered_usage_and_cross_month_costs() {
+        let (origin, server) = mock_server(5, |url| {
             let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+            assert!(!params.contains_key("project_ids") && !params.contains_key("api_key_ids"));
             match url.path() {
                 "/v1/organization/costs" => {
                     assert_eq!(
                         params["start_time"],
-                        midnight(day("2026-11-01")).to_string()
+                        midnight(day("2026-10-20")).to_string()
                     );
-                    assert!(!params.contains_key("project_ids"));
                     if let Some(cursor) = params.get("page") {
                         assert_eq!(cursor, "next+/&page");
                         (200, page("2026-11-18", vec![cost(2.5)], None))
                     } else {
+                        let mut payload = page(
+                            "2026-11-01",
+                            vec![cost(9.0), cost(1.0)],
+                            Some("next+/&page"),
+                        );
+                        payload["data"].as_array_mut().unwrap().push(
+                            json!({"start_time":midnight(day("2026-10-20")),"results":[cost(99.0)]}),
+                        );
+                        (200, payload)
+                    }
+                }
+                "/v1/organization/usage/completions" => {
+                    assert_eq!(params["group_by"], "model");
+                    assert_eq!(
+                        params["start_time"],
+                        midnight(day("2026-10-20")).to_string()
+                    );
+                    if let Some(cursor) = params.get("page") {
+                        assert_eq!(cursor, "usage-next");
                         (
                             200,
                             page(
-                                "2026-11-01",
-                                vec![cost(9.0), cost(1.0)],
-                                Some("next+/&page"),
+                                "2026-11-18",
+                                vec![completion("most-requests", 1, 2, 15)],
+                                None,
                             ),
                         )
+                    } else {
+                        let rows = (0..8)
+                            .map(|index| completion(&format!("model-{index}"), 20, 5, 1))
+                            .collect();
+                        (200, page("2026-11-17", rows, Some("usage-next")))
                     }
                 }
                 "/v1/organization/spend_limit" => (403, json!({"error":"scope required"})),
@@ -674,10 +756,59 @@ mod tests {
         server.join().unwrap();
         assert_eq!(result.used.unwrap().amount, 12.5);
         assert!(result.balance.is_none() && result.total.is_none());
-        assert_eq!(result.daily_usage[1].cost, Some(2.5));
+        assert_eq!(result.daily_usage[0].cost, Some(99.0));
+        assert_eq!(result.daily_usage[0].requests, None);
+        assert_eq!(result.daily_usage[2].cost, None);
+        assert_eq!(result.daily_usage[2].requests, Some(8));
+        let today = result.daily_usage.last().unwrap();
+        assert_eq!(today.cost, Some(2.5));
+        assert_eq!(today.cost_unit.as_deref(), Some("USD"));
+        assert_eq!(today.requests, Some(15));
+        assert_eq!(today.tokens, Some(3.0));
+        assert_eq!(result.model_usage.len(), 9);
+        assert!(result
+            .model_usage
+            .iter()
+            .any(|model| model.requests == Some(15)));
         let billing = result.open_ai_billing.unwrap();
         assert!(billing.spend_limit.is_none());
         assert!(billing.limit_error.unwrap().contains("403"));
+    }
+
+    #[tokio::test]
+    async fn summary_preserves_the_available_metric_on_partial_failure() {
+        for failed_costs in [true, false] {
+            let (origin, server) = mock_server(3, move |url| match url.path() {
+                "/v1/organization/costs" if !failed_costs => {
+                    (200, page("2026-11-18", vec![cost(3.5)], None))
+                }
+                "/v1/organization/usage/completions" if failed_costs => (
+                    200,
+                    page("2026-11-18", vec![completion("gpt-a", 1, 2, 3)], None),
+                ),
+                _ => (403, json!({"error":"scope required"})),
+            });
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let api = Api {
+                client: &client,
+                key: "test-admin-key",
+                origin: &origin,
+            };
+            let result = summary(&api, "2026-11-18T12:00:00Z".parse().unwrap())
+                .await
+                .unwrap();
+            server.join().unwrap();
+
+            assert_eq!(
+                result.used.map(|used| used.amount),
+                (!failed_costs).then_some(3.5)
+            );
+            assert_eq!(result.daily_usage[0].cost, (!failed_costs).then_some(3.5));
+            assert_eq!(result.daily_usage[0].requests, failed_costs.then_some(3));
+            let billing = result.open_ai_billing.unwrap();
+            assert_eq!(billing.costs_error.is_some(), failed_costs);
+            assert_eq!(billing.usage_error.is_some(), !failed_costs);
+        }
     }
 
     #[tokio::test]
